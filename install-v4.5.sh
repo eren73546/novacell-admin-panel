@@ -17,6 +17,7 @@ cat << "EOF"
 ║  🔄 3x-ui expiryTime bazlı gün gösterimi                     ║
 ║  ⏰ Kota/Süre dolunca otomatik pasif (30 saniye)             ║
 ║  📱 Telegram günlük yedekleme (opsiyonel)                    ║
+║  🎨 Özelleştirilebilir panel ismi                            ║
 ╚══════════════════════════════════════════════════════════════╝
 EOF
 echo -e "${NC}"
@@ -26,7 +27,7 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-echo -e "${GREEN}[1/12] TEMİZLİK...${NC}"
+echo -e "${GREEN}[1/13] TEMİZLİK...${NC}"
 systemctl stop xui-admin-panel 2>/dev/null || true
 systemctl disable xui-admin-panel 2>/dev/null || true
 rm -rf /opt/xui-admin-panel/app.py /opt/xui-admin-panel/index.html
@@ -37,7 +38,7 @@ rm -f /root/novacell-telegram-backup.sh
 crontab -l 2>/dev/null | grep -v -E "reset-quota|novacell|check-individual-quotas" | crontab - 2>/dev/null || true
 systemctl daemon-reload
 
-echo -e "${GREEN}[2/12] PAKETLER...${NC}"
+echo -e "${GREEN}[2/13] PAKETLER...${NC}"
 apt update -qq
 apt install -y python3 python3-pip python3-venv sqlite3 curl bc >/dev/null 2>&1
 
@@ -55,28 +56,49 @@ else
     echo -e "${YELLOW}🆕 Yeni kurulum${NC}"
 fi
 
-echo -e "${GREEN}[3/12] PYTHON ORTAMI...${NC}"
+echo -e "${GREEN}[3/13] PYTHON ORTAMI...${NC}"
 python3 -m venv venv
 source venv/bin/activate
 pip install --quiet --upgrade pip
 pip install --quiet flask flask-cors bcrypt
 
-echo -e "${GREEN}[4/12] BACKEND DOSYASI...${NC}"
+echo -e "${GREEN}[4/13] BACKEND DOSYASI...${NC}"
 curl -sL https://raw.githubusercontent.com/eren73546/novacell-admin-panel/main/app.py -o app.py || {
     echo -e "${RED}❌ Backend indirilemedi!${NC}"
     exit 1
 }
 
-echo -e "${GREEN}[5/12] FRONTEND DOSYASI...${NC}"
+echo -e "${GREEN}[5/13] FRONTEND DOSYASI...${NC}"
 curl -sL https://raw.githubusercontent.com/eren73546/novacell-admin-panel/main/index.html -o index.html || {
     echo -e "${RED}❌ Frontend indirilemedi!${NC}"
     exit 1
 }
 
-echo -e "${GREEN}[6/12] SERVİS DOSYASI...${NC}"
+echo -e "${GREEN}[6/13] PANEL AYARLARI...${NC}"
+echo ""
+echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+echo -e "${YELLOW}📋 PANEL İSMİ ÖZELLEŞTİRME${NC}"
+echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
+echo ""
+echo -e "${YELLOW}Panel başlığını özelleştirmek ister misiniz?${NC}"
+echo ""
+read -p "Panel ismi girin (boş bırakırsanız 'NovaCell-3 v4.5'): " PANEL_NAME
+PANEL_NAME=${PANEL_NAME:-NovaCell-3 v4.5}
+
+echo -e "${GREEN}✅ Panel ismi: $PANEL_NAME${NC}"
+
+sed -i "s/NovaCell-3 v4.5/$PANEL_NAME/g" index.html
+echo ""
+
+echo -e "${GREEN}[7/13] VERITABANI...${NC}"
+cd "$INSTALL_DIR"
+source venv/bin/activate
+python3 -c "from app import init_db; init_db()"
+
+echo -e "${GREEN}[8/13] SERVİS DOSYASI...${NC}"
 cat > /etc/systemd/system/xui-admin-panel.service << EOF
 [Unit]
-Description=NovaCell-3 v4.5 Admin Panel
+Description=$PANEL_NAME Admin Panel
 After=network.target
 
 [Service]
@@ -92,12 +114,7 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-echo -e "${GREEN}[7/12] VERITABANI...${NC}"
-cd "$INSTALL_DIR"
-source venv/bin/activate
-python3 -c "from app import init_db; init_db()"
-
-echo -e "${GREEN}[8/12] SERVİS BAŞLATILIYOR...${NC}"
+echo -e "${GREEN}[9/13] SERVİS BAŞLATILIYOR...${NC}"
 systemctl daemon-reload
 systemctl enable xui-admin-panel
 systemctl start xui-admin-panel
@@ -109,7 +126,7 @@ if ! systemctl is-active --quiet xui-admin-panel; then
     exit 1
 fi
 
-echo -e "${GREEN}[9/12] TELEGRAM YEDEKLEME (İSTEĞE BAĞLI)...${NC}"
+echo -e "${GREEN}[10/13] TELEGRAM YEDEKLEME (İSTEĞE BAĞLI)...${NC}"
 echo ""
 echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
 echo -e "${YELLOW}📱 TELEGRAM YEDEKLEMe KURULUMU (Opsiyonel)${NC}"
@@ -151,7 +168,6 @@ if [[ "$TELEGRAM_CHOICE" =~ ^[Ee]$ ]]; then
         read -p "👤 Chat ID girin: " CHAT_ID
     done
     
-    # Telegram bilgilerini kaydet
     cat > /root/.novacell-telegram << EOF
 BOT_TOKEN="$BOT_TOKEN"
 CHAT_ID="$CHAT_ID"
@@ -160,7 +176,6 @@ EOF
     
     echo -e "${GREEN}✅ Telegram bilgileri kaydedildi${NC}"
     
-    # Telegram yedek scripti oluştur
     cat > /root/novacell-telegram-backup.sh << 'BACKUPSCRIPT'
 #!/bin/bash
 source /root/.novacell-telegram
@@ -189,12 +204,11 @@ find "$BACKUP_DIR" -name "*.db" -mtime +14 -delete
 BACKUPSCRIPT
     chmod +x /root/novacell-telegram-backup.sh
     
-    # Test mesajı gönder
     echo ""
     echo -e "${YELLOW}📤 Test mesajı gönderiliyor...${NC}"
     TEST_RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
          -d chat_id="$CHAT_ID" \
-         -d text="✅ NovaCell-3 v4.5 kurulumu tamamlandı! Günlük yedekler her gece 04:30'da gönderilecek.")
+         -d text="✅ $PANEL_NAME kurulumu tamamlandı! Günlük yedekler her gece 04:30'da gönderilecek.")
     
     if echo "$TEST_RESPONSE" | grep -q '"ok":true'; then
         echo -e "${GREEN}✅ Test mesajı başarıyla gönderildi!${NC}"
@@ -212,7 +226,6 @@ else
     echo -e "${YELLOW}⚠️  Telegram yedeği atlandı${NC}"
     TELEGRAM_ENABLED=false
     
-    # Boş script oluştur
     cat > /root/novacell-telegram-backup.sh << 'BACKUPSCRIPT'
 #!/bin/bash
 echo "Telegram yedeği devre dışı"
@@ -221,7 +234,7 @@ BACKUPSCRIPT
     chmod +x /root/novacell-telegram-backup.sh
 fi
 
-echo -e "${GREEN}[10/12] CRON AYARLARI...${NC}"
+echo -e "${GREEN}[11/13] CRON AYARLARI...${NC}"
 if [ "$TELEGRAM_ENABLED" = true ]; then
     (crontab -l 2>/dev/null | grep -v "novacell-telegram-backup"; 
     echo "30 4 * * * /root/novacell-telegram-backup.sh") | crontab -
@@ -230,15 +243,15 @@ else
     echo -e "${YELLOW}⚠️  Telegram yedeği cron'a eklenmedi${NC}"
 fi
 
-echo -e "${GREEN}[11/12] SON KONTROL...${NC}"
+echo -e "${GREEN}[12/13] SON KONTROL...${NC}"
 sleep 2
 
-echo -e "${GREEN}[12/12] TAMAMLANDI!${NC}"
+echo -e "${GREEN}[13/13] TAMAMLANDI!${NC}"
 clear
 echo -e "${GREEN}"
 cat << "EOF"
 ╔══════════════════════════════════════════════════════════╗
-║   ✅ NovaCell-3 v4.5 BAŞARIYLA KURULDU!                 ║
+║   ✅ KURULUM BAŞARIYLA TAMAMLANDI!                      ║
 ╚══════════════════════════════════════════════════════════╝
 EOF
 echo -e "${NC}"
@@ -247,6 +260,7 @@ SERVER_IP=$(hostname -I | awk '{print $1}')
 echo -e "${BLUE}🌐 Panel Adresi: http://${SERVER_IP}:8888${NC}"
 echo -e "${BLUE}👤 Kullanıcı Adı: novacell${NC}"
 echo -e "${BLUE}🔑 Şifre: NovaCell25Hakki${NC}"
+echo -e "${BLUE}📋 Panel İsmi: $PANEL_NAME${NC}"
 echo ""
 echo -e "${YELLOW}═══════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}✅ ÖZELLİKLER:${NC}"
@@ -272,3 +286,12 @@ fi
 echo ""
 echo -e "${GREEN}✅ Tarayıcıda paneli açın ve CTRL+F5 yapın!${NC}"
 echo ""
+```
+
+---
+
+**Bu kodu direkt kopyala-yapıştır yapabilirsin! GitHub'a yükle!** 🚀
+
+**Commit mesajı:**
+```
+Add: Panel ismi özelleştirme, Telegram yedekleme, düzeltmeler
