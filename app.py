@@ -54,6 +54,93 @@ def init_db():
     conn.commit()
     conn.close()
 
+def check_and_disable_quota_exceeded():
+    try:
+        xui_db = '/etc/x-ui/x-ui.db'
+        if not os.path.exists(xui_db): 
+            return
+        
+        conn = sqlite3.connect(xui_db)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT id, settings FROM inbounds")
+        inbounds = c.fetchall()
+        
+        c.execute("SELECT email, up, down FROM client_traffics")
+        traffic_dict = {}
+        for row in c.fetchall():
+            traffic_dict[row['email']] = {'up': row['up'] or 0, 'down': row['down'] or 0}
+        
+        modified = False
+        for inbound in inbounds:
+            inbound_id = inbound['id']
+            settings = json.loads(inbound['settings'])
+            clients = settings.get('clients', [])
+            
+            for client in clients:
+                email = client.get('email', '')
+                total_gb = client.get('totalGB', 0)
+                
+                if total_gb > 0 and client.get('enable') == True:
+                    traffic = traffic_dict.get(email, {'up': 0, 'down': 0})
+                    used = (traffic['up'] + traffic['down'])
+                    
+                    if used >= total_gb:
+                        client['enable'] = False
+                        modified = True
+                        print(f"Kullanıcı {email} kotası doldu, devre dışı bırakıldı")
+            
+            if modified:
+                settings['clients'] = clients
+                new_settings_json = json.dumps(settings, ensure_ascii=False)
+                c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_settings_json, inbound_id))
+        
+        if modified: 
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Kota kontrol hatası: {e}")
+
+def check_and_disable_expired_users():
+    try:
+        xui_db = '/etc/x-ui/x-ui.db'
+        if not os.path.exists(xui_db): 
+            return
+        
+        conn = sqlite3.connect(xui_db)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT id, settings FROM inbounds")
+        inbounds = c.fetchall()
+        
+        current_time_ms = int(time.time() * 1000)
+        modified = False
+        
+        for inbound in inbounds:
+            inbound_id = inbound['id']
+            settings = json.loads(inbound['settings'])
+            clients = settings.get('clients', [])
+            
+            for client in clients:
+                email = client.get('email', '')
+                expiry = client.get('expiryTime', 0)
+                
+                if expiry > 0 and expiry < current_time_ms and client.get('enable') == True:
+                    client['enable'] = False
+                    modified = True
+                    print(f"Kullanıcı {email} süresi doldu, devre dışı bırakıldı")
+            
+            if modified:
+                settings['clients'] = clients
+                new_settings_json = json.dumps(settings, ensure_ascii=False)
+                c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_settings_json, inbound_id))
+        
+        if modified: 
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Süre kontrol hatası: {e}")
+
 def get_xui_users():
     try:
         check_and_disable_quota_exceeded()
@@ -159,7 +246,7 @@ def get_xui_users():
                     except: 
                         pass
                 
-        quota_days = None
+                quota_days = None
                 if expiry > 0:
                     try:
                         days_diff = (expiry - current_time_ms) / 1000 / 86400
@@ -611,93 +698,22 @@ def reset_user_quota(email):
         print(f"Kota sıfırlama hatası: {e}")
         return False
 
-def check_and_disable_quota_exceeded():
-    try:
-        xui_db = '/etc/x-ui/x-ui.db'
-        if not os.path.exists(xui_db): 
-            return
-        
-        conn = sqlite3.connect(xui_db)
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute("SELECT id, settings FROM inbounds")
-        inbounds = c.fetchall()
-        
-        c.execute("SELECT email, up, down FROM client_traffics")
-        traffic_dict = {}
-        for row in c.fetchall():
-            traffic_dict[row['email']] = {'up': row['up'] or 0, 'down': row['down'] or 0}
-        
-        modified = False
-        for inbound in inbounds:
-            inbound_id = inbound['id']
-            settings = json.loads(inbound['settings'])
-            clients = settings.get('clients', [])
-            
-            for client in clients:
-                email = client.get('email', '')
-                total_gb = client.get('totalGB', 0)
-                
-                if total_gb > 0 and client.get('enable') == True:
-                    traffic = traffic_dict.get(email, {'up': 0, 'down': 0})
-                    used = (traffic['up'] + traffic['down'])
-                    
-                    if used >= total_gb:
-                        client['enable'] = False
-                        modified = True
-                        print(f"Kullanıcı {email} kotası doldu, devre dışı bırakıldı")
-            
-            if modified:
-                settings['clients'] = clients
-                new_settings_json = json.dumps(settings, ensure_ascii=False)
-                c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_settings_json, inbound_id))
-        
-        if modified: 
-            conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Kota kontrol hatası: {e}")
-
-def check_and_disable_expired_users():
-    try:
-        xui_db = '/etc/x-ui/x-ui.db'
-        if not os.path.exists(xui_db): 
-            return
-        
-        conn = sqlite3.connect(xui_db)
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute("SELECT id, settings FROM inbounds")
-        inbounds = c.fetchall()
-        
-        current_time_ms = int(time.time() * 1000)
-        modified = False
-        
-        for inbound in inbounds:
-            inbound_id = inbound['id']
-            settings = json.loads(inbound['settings'])
-            clients = settings.get('clients', [])
-            
-            for client in clients:
-                email = client.get('email', '')
-                expiry = client.get('expiryTime', 0)
-                
-                if expiry > 0 and expiry < current_time_ms and client.get('enable') == True:
-                    client['enable'] = False
-                    modified = True
-                    print(f"Kullanıcı {email} süresi doldu, devre dışı bırakıldı")
-            
-            if modified:
-                settings['clients'] = clients
-                new_settings_json = json.dumps(settings, ensure_ascii=False)
-                c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_settings_json, inbound_id))
-        
-        if modified: 
-            conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Süre kontrol hatası: {e}")
-
 if __name__ == '__main__':
     init_db()
     app.run(host='0.0.0.0', port=8888, debug=False)
+```
+
+---
+
+**Bu kodun TAMAMINI GitHub'daki app.py'ye yapıştır!** 
+
+Değişiklikler:
+- ✅ Email kontrolü: `if not email or len(email) < 2:`
+- ✅ quota_days: expiryTime bazlı hesaplama
+- ✅ quota_reset_date: `user_settings.get('quota_reset_date', '')`
+- ✅ check_and_disable fonksiyonları eklendi
+- ✅ Girinti hataları düzeltildi
+
+**Commit mesajı:**
+```
+Fix: Email kontrolü esnek, quota_days expiryTime bazlı, quota_reset_date düzeltildi
