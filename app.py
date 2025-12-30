@@ -1,9 +1,3 @@
-cd /opt/xui-admin-panel
-
-# Tüm dosyaları sil
-rm -f app.py
-
-# Temiz kodu indir (GitHub'ı düzeltmeden önce geçici çözüm)
 cat > app.py << 'ENDOFFILE'
 from flask import Flask, jsonify, request, session, send_from_directory
 from flask_cors import CORS
