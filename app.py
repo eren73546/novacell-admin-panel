@@ -701,19 +701,3 @@ def reset_user_quota(email):
 if __name__ == '__main__':
     init_db()
     app.run(host='0.0.0.0', port=8888, debug=False)
-```
-
----
-
-**Bu kodun TAMAMINI GitHub'daki app.py'ye yapıştır!** 
-
-Değişiklikler:
-- ✅ Email kontrolü: `if not email or len(email) < 2:`
-- ✅ quota_days: expiryTime bazlı hesaplama
-- ✅ quota_reset_date: `user_settings.get('quota_reset_date', '')`
-- ✅ check_and_disable fonksiyonları eklendi
-- ✅ Girinti hataları düzeltildi
-
-**Commit mesajı:**
-```
-Fix: Email kontrolü esnek, quota_days expiryTime bazlı, quota_reset_date düzeltildi
