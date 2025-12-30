@@ -160,15 +160,11 @@ def get_xui_users():
                         pass
                 
                 quota_days = None
-                quota_reset_date = user_settings.get('quota_reset_date', '')
-                if quota_reset_date and kota_limit > 0:
+                if expiry > 0:
                     try:
-                        reset_date = datetime.strptime(quota_reset_date, '%Y-%m-%d')
-                        today = datetime.now()
-                        days_since_reset = (today - reset_date).days
-                        days_until_reset = 30 - days_since_reset
-                        quota_days = max(0, days_until_reset)
-                    except: 
+                        days_diff = (expiry - current_time_ms) / 1000 / 86400
+                        quota_days = max(0, int(days_diff))
+                    except:
                         quota_days = None
                 
                 folder = user_settings.get('folder', 'Tümü')
