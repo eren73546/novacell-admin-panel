@@ -94,7 +94,7 @@ def get_xui_users():
             clients = settings.get('clients', [])
             for client in clients:
                 email = client.get('email', '')
-                if len(email) != 4: 
+                if not email or len(email) < 2: 
                     continue
                 
                 traffic = traffic_dict.get(email, {'up': 0, 'down': 0, 'inbound_id': inbound['id'], 'last_online': 0})
