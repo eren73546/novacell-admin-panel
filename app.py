@@ -1,10 +1,3 @@
-cd /opt/xui-admin-panel
-
-# Tüm dosyaları sil
-rm -f app.py
-
-# Temiz kodu indir (GitHub'ı düzeltmeden önce geçici çözüm)
-cat > app.py << 'ENDOFFILE'
 from flask import Flask, jsonify, request, session, send_from_directory
 from flask_cors import CORS
 import sqlite3
@@ -708,10 +701,3 @@ def reset_user_quota(email):
 if __name__ == '__main__':
     init_db()
     app.run(host='0.0.0.0', port=8888, debug=False)
-ENDOFFILE
-
-# Syntax kontrolü
-python3 -m py_compile app.py && echo "✅ Syntax TAMAM!" || echo "❌ Hata var"
-
-# Kurulum scriptini çalıştır
-bash <(curl -sL https://raw.githubusercontent.com/eren73546/novacell-admin-panel/main/install-v4.5.sh)
