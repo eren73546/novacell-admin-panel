@@ -169,6 +169,10 @@ def get_xui_users():
                 
                 folder = user_settings.get('folder', 'Tümü')
                 
+                folder = user_settings.get('folder', 'Tümü')
+                
+                folder = user_settings.get('folder', 'Tümü')
+                
                 users.append({
                     'id': client.get('id'),
                     'kullanici_adi': email,
@@ -192,7 +196,7 @@ def get_xui_users():
                     'days_until_payment': days_until_payment,
                     'expiry_date_only': expiry_date_only,
                     'quota_days': quota_days,
-                    'quota_reset_date': quota_reset_date,
+                    'quota_reset_date': user_settings.get('quota_reset_date', ''),
                     'folder': folder
                 })
         return users
