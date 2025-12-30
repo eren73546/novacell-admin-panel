@@ -159,17 +159,13 @@ def get_xui_users():
                     except: 
                         pass
                 
-                quota_days = None
+        quota_days = None
                 if expiry > 0:
                     try:
                         days_diff = (expiry - current_time_ms) / 1000 / 86400
                         quota_days = max(0, int(days_diff))
                     except:
                         quota_days = None
-                
-                folder = user_settings.get('folder', 'Tümü')
-                
-                folder = user_settings.get('folder', 'Tümü')
                 
                 folder = user_settings.get('folder', 'Tümü')
                 
