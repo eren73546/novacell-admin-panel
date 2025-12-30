@@ -153,7 +153,6 @@
               <th style="width:6%">Online</th>
               <th style="width:6%">Fiyat</th>
               <th style="width:7%">Ödeme</th>
-              <th style="width:5%">Kota</th>
               <th style="width:12%">İşlem</th>
             </tr>
           </thead>
@@ -597,7 +596,6 @@ function displayUsers(u){
         <td>${onlineIndicator}</td>
         <td><strong>${x.monthly_price?x.monthly_price+'₺':'-'}</strong></td>
         <td>${paymentBadge}</td>
-        <td><strong style="color:var(--primary)">${quotaDays}</strong></td>
         <td class="actions-cell">
           <div class="toggle-container">
             <label class="toggle-switch">
@@ -629,7 +627,6 @@ function displayUserCards(u){
     if(x.payment_status && x.days_until_payment!==null){
       paymentShort=`${x.days_until_payment}g`;
     }
-    const quotaDays=x.quota_days!==null?`${x.quota_days}g kala`:'-';
     
     return `
       <div class="user-card">
