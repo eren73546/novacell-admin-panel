@@ -385,6 +385,9 @@ function startClock(){
 
 async function loadData(){
   await Promise.all([loadStats(),loadUsers()]);
+  if(allUsers && allUsers.length > 0){
+    updateCharts(allUsers);
+  }
 }
 
 async function loadStats(){
