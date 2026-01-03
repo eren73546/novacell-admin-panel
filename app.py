@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import secrets
 import time
 import json
+import calendar
 
 app = Flask(__name__, static_folder='.')
 app.secret_key = secrets.token_hex(32)
@@ -549,13 +550,38 @@ def add_payment():
                     VALUES (?, ?, ?, ?, ?)""",
                  (email, amount, payment_date, payment_method, notes))
         
-        try:
-            payment_dt = datetime.strptime(payment_date, '%Y-%m-%d')
-            next_payment = (payment_dt + timedelta(days=30)).strftime('%Y-%m-%d')
-            quota_reset_date = payment_date
-        except:
-            next_payment = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
-            quota_reset_date = datetime.now().strftime('%Y-%m-%d')
+        c.execute("SELECT next_payment_date FROM user_settings WHERE email = ?", (email,))
+        existing_record = c.fetchone()
+        
+        if existing_record and existing_record[0]:
+            try:
+                current_next_payment = datetime.strptime(existing_record[0], '%Y-%m-%d')
+                payment_day = current_next_payment.day
+                
+                next_month = current_next_payment.month + 1
+                next_year = current_next_payment.year
+                
+                if next_month > 12:
+                    next_month = 1
+                    next_year += 1
+                
+                max_day = calendar.monthrange(next_year, next_month)[1]
+                safe_day = min(payment_day, max_day)
+                
+                next_payment = datetime(next_year, next_month, safe_day).strftime('%Y-%m-%d')
+                quota_reset_date = existing_record[0]
+            except:
+                payment_dt = datetime.strptime(payment_date, '%Y-%m-%d')
+                next_payment = (payment_dt + timedelta(days=30)).strftime('%Y-%m-%d')
+                quota_reset_date = payment_date
+        else:
+            try:
+                payment_dt = datetime.strptime(payment_date, '%Y-%m-%d')
+                next_payment = (payment_dt + timedelta(days=30)).strftime('%Y-%m-%d')
+                quota_reset_date = payment_date
+            except:
+                next_payment = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+                quota_reset_date = datetime.now().strftime('%Y-%m-%d')
         
         c.execute("SELECT * FROM user_settings WHERE email = ?", (email,))
         if c.fetchone():
