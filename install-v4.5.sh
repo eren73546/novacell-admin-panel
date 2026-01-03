@@ -287,11 +287,3 @@ echo ""
 echo -e "${GREEN}✅ Tarayıcıda paneli açın ve CTRL+F5 yapın!${NC}"
 echo ""
 ```
-
----
-
-**Bu kodu direkt kopyala-yapıştır yapabilirsin! GitHub'a yükle!** 🚀
-
-**Commit mesajı:**
-```
-Add: Panel ismi özelleştirme, Telegram yedekleme, düzeltmeler
