@@ -20,3 +20,5 @@ tail -20 /tmp/install-v4.5.sh
 
 # Çalıştır
 bash /tmp/install-v4.5.sh
+NOTLAR
+3X-Uİ DE PASİF AKTİF YAPARSAN Novacell panelde aktif yapamıyoruz, ve süresiz yapıp düzenlemek gerekiyor
