@@ -266,7 +266,7 @@ echo -e "${YELLOW}════════════════════�
 echo -e "${GREEN}✅ ÖZELLİKLER:${NC}"
 echo -e "   • 3x-ui ile senkron gün gösterimi"
 echo -e "   • Kota/Süre dolunca otomatik pasif (30 saniye)"
-echo -e "   • Email kontrolü: 2+ karakter (esnek)"
+echo -e "   • Email kontrolü: 4 karakter"
 echo ""
 if [ "$TELEGRAM_ENABLED" = true ]; then
     echo -e "${GREEN}✅ TELEGRAM YEDEKLEMe:${NC}"
@@ -286,4 +286,3 @@ fi
 echo ""
 echo -e "${GREEN}✅ Tarayıcıda paneli açın ve CTRL+F5 yapın!${NC}"
 echo ""
-```
