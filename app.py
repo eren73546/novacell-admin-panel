@@ -14,13 +14,20 @@ app.secret_key = secrets.token_hex(32)
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=12)
 CORS(app, supports_credentials=True)
 
+# --- VERITABANI DOSYA YOLLARI ---
+PANEL_DB = 'admin_panel.db'
+XUI_DB = '/etc/x-ui/x-ui.db'
+
 def init_db():
-    conn = sqlite3.connect('admin_panel.db')
+    conn = sqlite3.connect(PANEL_DB)
     c = conn.cursor()
+    
+    # Tabloları oluştur
     c.execute('''CREATE TABLE IF NOT EXISTS admin_users
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   username TEXT NOT NULL UNIQUE,
                   password_hash TEXT NOT NULL)''')
+                  
     c.execute('''CREATE TABLE IF NOT EXISTS user_settings
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   email TEXT NOT NULL UNIQUE,
@@ -34,6 +41,7 @@ def init_db():
                   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                   updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                   folder TEXT DEFAULT 'Tümü')''')
+                  
     c.execute('''CREATE TABLE IF NOT EXISTS payment_history
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   email TEXT NOT NULL,
@@ -42,26 +50,58 @@ def init_db():
                   payment_method TEXT,
                   notes TEXT,
                   created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
+                  
     c.execute('''CREATE TABLE IF NOT EXISTS quota_reset_log
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   email TEXT NOT NULL,
                   reset_date TEXT NOT NULL,
                   reset_type TEXT DEFAULT 'auto',
                   created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
+
+    # --- KRITIK DUZELTME: EKSIK SUTUN KONTROLU (MIGRATION) ---
+    try:
+        c.execute("SELECT quota_reset_date FROM user_settings LIMIT 1")
+    except sqlite3.OperationalError:
+        print("Sistem: quota_reset_date sütunu eksik, otomatik ekleniyor...")
+        try:
+            c.execute("ALTER TABLE user_settings ADD COLUMN quota_reset_date INTEGER DEFAULT 0")
+            print("Sistem: Sütun başarıyla eklendi.")
+        except Exception as e:
+            print(f"Sistem: Sütun ekleme hatası (Tablo boş olabilir): {e}")
+    # ---------------------------------------------------------
+
+    # Admin kullanıcısı oluştur
     c.execute("SELECT COUNT(*) FROM admin_users WHERE username = 'novacell'")
     if c.fetchone()[0] == 0:
         hashed = bcrypt.hashpw('NovaCell25Hakki'.encode('utf-8'), bcrypt.gensalt())
         c.execute("INSERT INTO admin_users (username, password_hash) VALUES (?, ?)", ('novacell', hashed))
+    
     conn.commit()
     conn.close()
 
+def sync_xui_expiry(email, expiry_timestamp_ms):
+    """
+    X-UI Veritabanını (client_traffics) doğrudan günceller.
+    Bu, kullanıcının anında açılmasını/kapanmasını sağlar.
+    """
+    try:
+        if not os.path.exists(XUI_DB): return
+        
+        conn = sqlite3.connect(XUI_DB)
+        c = conn.cursor()
+        # client_traffics tablosunu güncelle
+        c.execute("UPDATE client_traffics SET expiry_time = ? WHERE email = ?", (expiry_timestamp_ms, email))
+        conn.commit()
+        conn.close()
+        print(f"X-UI Sync: {email} -> {expiry_timestamp_ms} olarak güncellendi.")
+    except Exception as e:
+        print(f"X-UI Sync Hatası: {e}")
+
 def check_and_disable_quota_exceeded():
     try:
-        xui_db = '/etc/x-ui/x-ui.db'
-        if not os.path.exists(xui_db): 
-            return
+        if not os.path.exists(XUI_DB): return
         
-        conn = sqlite3.connect(xui_db)
+        conn = sqlite3.connect(XUI_DB)
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("SELECT id, settings FROM inbounds")
@@ -78,6 +118,7 @@ def check_and_disable_quota_exceeded():
             settings = json.loads(inbound['settings'])
             clients = settings.get('clients', [])
             
+            inbound_modified = False
             for client in clients:
                 email = client.get('email', '')
                 total_gb = client.get('totalGB', 0)
@@ -88,27 +129,28 @@ def check_and_disable_quota_exceeded():
                     
                     if used >= total_gb:
                         client['enable'] = False
+                        inbound_modified = True
                         modified = True
                         print(f"Kullanıcı {email} kotası doldu, devre dışı bırakıldı")
             
-            if modified:
+            if inbound_modified:
                 settings['clients'] = clients
                 new_settings_json = json.dumps(settings, ensure_ascii=False)
                 c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_settings_json, inbound_id))
         
         if modified: 
             conn.commit()
+            # X-UI'ı yeniden başlatmaya gerek yok, DB güncellemesi yeterli olabilir ama garanti olsun
+            # os.system('/usr/bin/systemctl reload x-ui') 
         conn.close()
     except Exception as e:
         print(f"Kota kontrol hatası: {e}")
 
 def check_and_disable_expired_users():
     try:
-        xui_db = '/etc/x-ui/x-ui.db'
-        if not os.path.exists(xui_db): 
-            return
+        if not os.path.exists(XUI_DB): return
         
-        conn = sqlite3.connect(xui_db)
+        conn = sqlite3.connect(XUI_DB)
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("SELECT id, settings FROM inbounds")
@@ -122,16 +164,18 @@ def check_and_disable_expired_users():
             settings = json.loads(inbound['settings'])
             clients = settings.get('clients', [])
             
+            inbound_modified = False
             for client in clients:
                 email = client.get('email', '')
                 expiry = client.get('expiryTime', 0)
                 
                 if expiry > 0 and expiry < current_time_ms and client.get('enable') == True:
                     client['enable'] = False
+                    inbound_modified = True
                     modified = True
                     print(f"Kullanıcı {email} süresi doldu, devre dışı bırakıldı")
             
-            if modified:
+            if inbound_modified:
                 settings['clients'] = clients
                 new_settings_json = json.dumps(settings, ensure_ascii=False)
                 c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_settings_json, inbound_id))
@@ -147,16 +191,15 @@ def get_xui_users():
         check_and_disable_quota_exceeded()
         check_and_disable_expired_users()
         
-        xui_db = '/etc/x-ui/x-ui.db'
-        if not os.path.exists(xui_db): 
-            return []
+        if not os.path.exists(XUI_DB): return []
         
-        conn = sqlite3.connect(xui_db)
+        conn = sqlite3.connect(XUI_DB)
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("SELECT id, settings FROM inbounds")
         inbounds = c.fetchall()
         c.execute("SELECT email, up, down, inbound_id, last_online FROM client_traffics")
+        
         traffic_dict = {}
         for row in c.fetchall():
             traffic_dict[row['email']] = {
@@ -167,7 +210,7 @@ def get_xui_users():
             }
         conn.close()
         
-        admin_conn = sqlite3.connect('admin_panel.db')
+        admin_conn = sqlite3.connect(PANEL_DB)
         admin_conn.row_factory = sqlite3.Row
         admin_c = admin_conn.cursor()
         admin_c.execute("SELECT * FROM user_settings")
@@ -230,10 +273,15 @@ def get_xui_users():
                 next_payment = user_settings.get('next_payment_date', '') or expiry_date_only
                 payment_status = "none"
                 days_until_payment = None
+                
                 if next_payment:
                     try:
                         next_date = datetime.strptime(next_payment, '%Y-%m-%d')
                         today = datetime.now()
+                        # Saatleri sıfırla ki sadece gün farkını alalım
+                        next_date = next_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                        today = today.replace(hour=0, minute=0, second=0, microsecond=0)
+                        
                         days_diff = (next_date - today).days
                         days_until_payment = days_diff
                         if days_diff < 0: 
@@ -295,7 +343,7 @@ def index():
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.json
-    conn = sqlite3.connect('admin_panel.db')
+    conn = sqlite3.connect(PANEL_DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM admin_users WHERE username = ?", (data.get('username'),))
@@ -350,11 +398,10 @@ def toggle_user():
         user_email = data.get('email')
         new_enable = data.get('enable')
         
-        xui_db = '/etc/x-ui/x-ui.db'
-        if not os.path.exists(xui_db): 
+        if not os.path.exists(XUI_DB): 
             return jsonify({'success': False, 'message': 'Database bulunamadı'}), 500
         
-        conn = sqlite3.connect(xui_db)
+        conn = sqlite3.connect(XUI_DB)
         c = conn.cursor()
         c.execute("SELECT id, settings FROM inbounds")
         inbounds = c.fetchall()
@@ -394,7 +441,7 @@ def update_user_settings():
         data = request.json
         email = data.get('email')
         
-        conn = sqlite3.connect('admin_panel.db')
+        conn = sqlite3.connect(PANEL_DB)
         c = conn.cursor()
         
         expiry_or_payment = data.get('expiry_date') or data.get('next_payment_date')
@@ -410,35 +457,35 @@ def update_user_settings():
         if existing:
             if quota_reset_date:
                 c.execute("""UPDATE user_settings 
-                            SET monthly_price = ?, next_payment_date = ?, notes = ?, folder = ?, 
-                                quota_reset_date = ?, updated_at = CURRENT_TIMESTAMP
-                            WHERE email = ?""",
-                         (data.get('monthly_price', 0), expiry_or_payment, data.get('notes', ''), 
-                          folder, quota_reset_date, email))
+                             SET monthly_price = ?, next_payment_date = ?, notes = ?, folder = ?, 
+                                 quota_reset_date = ?, updated_at = CURRENT_TIMESTAMP
+                             WHERE email = ?""",
+                          (data.get('monthly_price', 0), expiry_or_payment, data.get('notes', ''), 
+                           folder, quota_reset_date, email))
             else:
                 c.execute("""UPDATE user_settings 
-                            SET monthly_price = ?, next_payment_date = ?, notes = ?, folder = ?, 
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE email = ?""",
-                         (data.get('monthly_price', 0), expiry_or_payment, data.get('notes', ''), 
-                          folder, email))
+                             SET monthly_price = ?, next_payment_date = ?, notes = ?, folder = ?, 
+                                 updated_at = CURRENT_TIMESTAMP
+                             WHERE email = ?""",
+                          (data.get('monthly_price', 0), expiry_or_payment, data.get('notes', ''), 
+                           folder, email))
         else:
             if quota_reset_date:
                 c.execute("""INSERT INTO user_settings (email, monthly_price, next_payment_date, notes, folder, quota_reset_date)
-                            VALUES (?, ?, ?, ?, ?, ?)""",
-                         (email, data.get('monthly_price', 0), expiry_or_payment, data.get('notes', ''), 
-                          folder, quota_reset_date))
+                             VALUES (?, ?, ?, ?, ?, ?)""",
+                          (email, data.get('monthly_price', 0), expiry_or_payment, data.get('notes', ''), 
+                           folder, quota_reset_date))
             else:
                 c.execute("""INSERT INTO user_settings (email, monthly_price, next_payment_date, notes, folder)
-                            VALUES (?, ?, ?, ?, ?)""",
-                         (email, data.get('monthly_price', 0), expiry_or_payment, data.get('notes', ''), folder))
+                             VALUES (?, ?, ?, ?, ?)""",
+                          (email, data.get('monthly_price', 0), expiry_or_payment, data.get('notes', ''), folder))
         
         conn.commit()
         conn.close()
         
+        # --- X-UI TARAFINI GUNCELLE (Sync) ---
         if data.get('quota') is not None or data.get('expiry_date'):
-            xui_db = '/etc/x-ui/x-ui.db'
-            xui_conn = sqlite3.connect(xui_db)
+            xui_conn = sqlite3.connect(XUI_DB)
             xui_c = xui_conn.cursor()
             xui_c.execute("SELECT id, settings FROM inbounds")
             inbounds = xui_c.fetchall()
@@ -447,8 +494,12 @@ def update_user_settings():
                 inbound_id = inbound[0]
                 settings = json.loads(inbound[1])
                 clients = settings.get('clients', [])
+                inbound_changed = False
+                
                 for client in clients:
                     if client.get('email') == email:
+                        
+                        # KOTA AYARLA
                         if data.get('quota') is not None:
                             quota_gb = float(data.get('quota'))
                             if quota_gb == 0: 
@@ -456,19 +507,31 @@ def update_user_settings():
                             else: 
                                 client['totalGB'] = int(quota_gb * 1024 * 1024 * 1024)
                             reset_user_quota(email)
+                            inbound_changed = True
                         
+                        # TARIH AYARLA VE SYNC ET
                         if data.get('expiry_date'):
                             try:
                                 expiry_dt = datetime.strptime(data.get('expiry_date'), '%Y-%m-%d')
                                 expiry_dt = expiry_dt.replace(hour=23, minute=59, second=59)
-                                client['expiryTime'] = int(expiry_dt.timestamp() * 1000)
-                            except: 
+                                new_expiry_ms = int(expiry_dt.timestamp() * 1000)
+                                
+                                # 1. JSON Ayarı
+                                client['expiryTime'] = new_expiry_ms
+                                inbound_changed = True
+                                
+                                # 2. Canlı Tablo Ayarı (MOTOR ICIN ONEMLI)
+                                sync_xui_expiry(email, new_expiry_ms)
+                                
+                            except Exception as ex: 
+                                print(f"Tarih convert hatasi: {ex}")
                                 pass
                         break
                 
-                settings['clients'] = clients
-                new_settings_json = json.dumps(settings, ensure_ascii=False)
-                xui_c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_settings_json, inbound_id))
+                if inbound_changed:
+                    settings['clients'] = clients
+                    new_settings_json = json.dumps(settings, ensure_ascii=False)
+                    xui_c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_settings_json, inbound_id))
             
             xui_conn.commit()
             xui_conn.close()
@@ -490,7 +553,7 @@ def move_to_folder():
         if new_folder not in valid_folders:
             return jsonify({'success': False, 'message': 'Geçersiz klasör adı'}), 400
         
-        conn = sqlite3.connect('admin_panel.db')
+        conn = sqlite3.connect(PANEL_DB)
         c = conn.cursor()
         c.execute("SELECT email FROM user_settings WHERE email = ?", (email,))
         exists = c.fetchone()
@@ -515,7 +578,7 @@ def update_user_note():
         email = data.get('email')
         note = data.get('note', '')
         
-        conn = sqlite3.connect('admin_panel.db')
+        conn = sqlite3.connect(PANEL_DB)
         c = conn.cursor()
         c.execute("SELECT * FROM user_settings WHERE email = ?", (email,))
         existing = c.fetchone()
@@ -543,16 +606,19 @@ def add_payment():
         payment_method = data.get('payment_method', '')
         notes = data.get('notes', '')
         
-        conn = sqlite3.connect('admin_panel.db')
+        conn = sqlite3.connect(PANEL_DB)
         c = conn.cursor()
         
         c.execute("""INSERT INTO payment_history (email, amount, payment_date, payment_method, notes)
-                    VALUES (?, ?, ?, ?, ?)""",
-                 (email, amount, payment_date, payment_method, notes))
+                     VALUES (?, ?, ?, ?, ?)""",
+                  (email, amount, payment_date, payment_method, notes))
         
         c.execute("SELECT next_payment_date FROM user_settings WHERE email = ?", (email,))
         existing_record = c.fetchone()
         
+        next_payment = None
+        quota_reset_date = None
+
         if existing_record and existing_record[0]:
             try:
                 current_next_payment = datetime.strptime(existing_record[0], '%Y-%m-%d')
@@ -586,21 +652,57 @@ def add_payment():
         c.execute("SELECT * FROM user_settings WHERE email = ?", (email,))
         if c.fetchone():
             c.execute("""UPDATE user_settings 
-                        SET last_payment_date = ?, next_payment_date = ?, quota_reset_date = ?, 
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE email = ?""",
-                     (payment_date, next_payment, quota_reset_date, email))
+                         SET last_payment_date = ?, next_payment_date = ?, quota_reset_date = ?, 
+                             updated_at = CURRENT_TIMESTAMP
+                         WHERE email = ?""",
+                      (payment_date, next_payment, quota_reset_date, email))
         else:
             c.execute("""INSERT INTO user_settings (email, last_payment_date, next_payment_date, quota_reset_date)
-                        VALUES (?, ?, ?, ?)""",
-                     (email, payment_date, next_payment, quota_reset_date))
+                         VALUES (?, ?, ?, ?)""",
+                      (email, payment_date, next_payment, quota_reset_date))
         
         conn.commit()
         conn.close()
         
         reset_user_quota(email)
         
-        return jsonify({'success': True, 'message': 'Ödeme kaydedildi ve kota sıfırlandı!'})
+        # --- X-UI MOTORUNU DA UZAT (YENI EKLENEN KOD) ---
+        # Ödeme alındıysa, kullanıcının süresini de yeni ödeme tarihine kadar uzatalım
+        if next_payment:
+            try:
+                expiry_dt = datetime.strptime(next_payment, '%Y-%m-%d')
+                expiry_dt = expiry_dt.replace(hour=23, minute=59, second=59)
+                new_expiry_ms = int(expiry_dt.timestamp() * 1000)
+                
+                # 1. Sync fonksiyonunu çağır (client_traffics için)
+                sync_xui_expiry(email, new_expiry_ms)
+                
+                # 2. Inbounds JSON'ı da güncelle
+                xui_conn = sqlite3.connect(XUI_DB)
+                xui_c = xui_conn.cursor()
+                xui_c.execute("SELECT id, settings FROM inbounds")
+                for row in xui_c.fetchall():
+                    inbound_id = row[0]
+                    settings = json.loads(row[1])
+                    clients = settings.get('clients', [])
+                    changed = False
+                    for client in clients:
+                        if client.get('email') == email:
+                            client['expiryTime'] = new_expiry_ms
+                            client['enable'] = True # Süre uzadıysa kullanıcıyı aktif et
+                            changed = True
+                            break
+                    if changed:
+                        settings['clients'] = clients
+                        new_json = json.dumps(settings, ensure_ascii=False)
+                        xui_c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_json, inbound_id))
+                xui_conn.commit()
+                xui_conn.close()
+                print(f"Ödeme sonrası X-UI süresi uzatıldı: {email} -> {next_payment}")
+            except Exception as e:
+                print(f"Ödeme sonrası süre uzatma hatası: {e}")
+        
+        return jsonify({'success': True, 'message': 'Ödeme kaydedildi, kota sıfırlandı ve süre uzatıldı!'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -609,7 +711,7 @@ def get_payment_history(email):
     if 'user_id' not in session: 
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        conn = sqlite3.connect('admin_panel.db')
+        conn = sqlite3.connect(PANEL_DB)
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("SELECT * FROM payment_history WHERE email = ? ORDER BY payment_date DESC", (email,))
@@ -679,11 +781,10 @@ def get_notifications():
 
 def reset_user_quota(email):
     try:
-        xui_db = '/etc/x-ui/x-ui.db'
-        if not os.path.exists(xui_db): 
+        if not os.path.exists(XUI_DB): 
             return False
         
-        conn = sqlite3.connect(xui_db)
+        conn = sqlite3.connect(XUI_DB)
         c = conn.cursor()
         c.execute("SELECT up, down FROM client_traffics WHERE email = ?", (email,))
         result = c.fetchone()
@@ -692,7 +793,7 @@ def reset_user_quota(email):
             current_usage_bytes = (result[0] or 0) + (result[1] or 0)
             current_usage_gb = current_usage_bytes / (1024**3)
             
-            admin_conn = sqlite3.connect('admin_panel.db')
+            admin_conn = sqlite3.connect(PANEL_DB)
             admin_c = admin_conn.cursor()
             admin_c.execute("SELECT total_usage_ever FROM user_settings WHERE email = ?", (email,))
             admin_result = admin_c.fetchone()
@@ -712,7 +813,7 @@ def reset_user_quota(email):
         conn.commit()
         conn.close()
         
-        admin_conn = sqlite3.connect('admin_panel.db')
+        admin_conn = sqlite3.connect(PANEL_DB)
         admin_c = admin_conn.cursor()
         admin_c.execute("INSERT INTO quota_reset_log (email, reset_date, reset_type) VALUES (?, ?, ?)",
                        (email, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'manual'))
