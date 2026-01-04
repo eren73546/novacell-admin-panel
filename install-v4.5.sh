@@ -12,12 +12,12 @@ clear
 echo -e "${PURPLE}"
 cat << "EOF"
 ╔══════════════════════════════════════════════════════════════╗
-║   🚀 NovaCell-3 v4.5 - KURULUM                               ║
+║   🚀 NovaCell-3 v4.6 - KURULUM                               ║
 ║   ✅ Kullanıcı: novacell / NovaCell25Hakki                   ║
 ║   🔄 3x-ui expiryTime bazlı gün gösterimi                    ║
 ║   ⏰ Kota/Süre dolunca otomatik pasif (30 saniye)            ║
 ║   📱 Telegram günlük yedekleme (opsiyonel)                   ║
-║   🎨 Özelleştirilebilir panel ismi                           ║
+║   🎨 Özelleştirilebilir panel ismi (GARANTİLİ)               ║
 ╚══════════════════════════════════════════════════════════════╝
 EOF
 echo -e "${NC}"
@@ -63,7 +63,6 @@ pip install --quiet --upgrade pip
 pip install --quiet flask flask-cors bcrypt
 
 echo -e "${GREEN}[4/13] BACKEND DOSYASI...${NC}"
-# GitHub'daki dosyanın güncellendiğinden emin olun veya yerel dosya kullanın.
 curl -sL https://raw.githubusercontent.com/eren73546/novacell-admin-panel/main/app.py -o app.py || {
     echo -e "${RED}❌ Backend indirilemedi!${NC}"
     exit 1
@@ -86,20 +85,39 @@ echo ""
 read -p "Panel ismi girin (boş bırakırsanız 'NovaCell-3 v4.5'): " PANEL_NAME
 PANEL_NAME=${PANEL_NAME:-NovaCell-3 v4.5}
 
-echo -e "${GREEN}✅ Panel ismi: $PANEL_NAME${NC}"
+echo -e "${GREEN}✅ Seçilen İsim: $PANEL_NAME${NC}"
+echo -e "${YELLOW}⚙️  Dosyalar düzenleniyor...${NC}"
 
-# 1. HTML tarafını güncelle (Görünen Başlık)
-sed -i "s/NovaCell-3 v4.5/$PANEL_NAME/g" index.html
+# --- GÜÇLENDİRİLMİŞ İSİM DEĞİŞTİRME (PYTHON İLE) ---
+# Sed komutu bazen tırnak işaretlerinde hata yapabilir. 
+# Python ile dosyanın içindeki "NovaCell-3" geçen her yeri bulup değiştiriyoruz.
+python3 -c "
+import sys
+import os
 
-# 2. Python tarafını güncelle (API'deki Sunucu Adı)
-# app.py içinde 'SERVER_NAME =' ile başlayan satırı bulur ve değiştirir.
-if grep -q "SERVER_NAME =" app.py; then
-    sed -i "s/^SERVER_NAME = .*/SERVER_NAME = \"$PANEL_NAME\"/" app.py
-else
-    # Eğer app.py güncel değilse ve satır yoksa, manuel eklemeye çalışır (Yedek Plan)
-    sed -i "s/sunucu_adi': 'NovaCell-3'/sunucu_adi': '$PANEL_NAME'/g" app.py
-fi
+new_name = '''$PANEL_NAME'''
 
+# app.py düzenle
+if os.path.exists('app.py'):
+    with open('app.py', 'r', encoding='utf-8') as f:
+        content = f.read()
+    # Hem tek tırnaklı hem çift tırnaklı varyasyonları, hem de düz metni değiştir
+    content = content.replace(\"'NovaCell-3'\", f\"'{new_name}'\")
+    content = content.replace('\"NovaCell-3\"', f'\"{new_name}\"')
+    content = content.replace('NovaCell-3', new_name)
+    with open('app.py', 'w', encoding='utf-8') as f:
+        f.write(content)
+    print('✅ app.py güncellendi.')
+
+# index.html düzenle
+if os.path.exists('index.html'):
+    with open('index.html', 'r', encoding='utf-8') as f:
+        content = f.read()
+    content = content.replace('NovaCell-3', new_name)
+    with open('index.html', 'w', encoding='utf-8') as f:
+        f.write(content)
+    print('✅ index.html güncellendi.')
+"
 echo ""
 
 echo -e "${GREEN}[7/13] VERITABANI...${NC}"
