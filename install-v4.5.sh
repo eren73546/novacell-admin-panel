@@ -12,12 +12,12 @@ clear
 echo -e "${PURPLE}"
 cat << "EOF"
 ╔══════════════════════════════════════════════════════════════╗
-║    🚀 NovaCell-3 v4.5 - KURULUM                             ║
-║  ✅ Kullanıcı: novacell / NovaCell25Hakki                    ║
-║  🔄 3x-ui expiryTime bazlı gün gösterimi                     ║
-║  ⏰ Kota/Süre dolunca otomatik pasif (30 saniye)             ║
-║  📱 Telegram günlük yedekleme (opsiyonel)                    ║
-║  🎨 Özelleştirilebilir panel ismi                            ║
+║   🚀 NovaCell-3 v4.5 - KURULUM                               ║
+║   ✅ Kullanıcı: novacell / NovaCell25Hakki                   ║
+║   🔄 3x-ui expiryTime bazlı gün gösterimi                    ║
+║   ⏰ Kota/Süre dolunca otomatik pasif (30 saniye)            ║
+║   📱 Telegram günlük yedekleme (opsiyonel)                   ║
+║   🎨 Özelleştirilebilir panel ismi                           ║
 ╚══════════════════════════════════════════════════════════════╝
 EOF
 echo -e "${NC}"
@@ -63,6 +63,7 @@ pip install --quiet --upgrade pip
 pip install --quiet flask flask-cors bcrypt
 
 echo -e "${GREEN}[4/13] BACKEND DOSYASI...${NC}"
+# GitHub'daki dosyanın güncellendiğinden emin olun veya yerel dosya kullanın.
 curl -sL https://raw.githubusercontent.com/eren73546/novacell-admin-panel/main/app.py -o app.py || {
     echo -e "${RED}❌ Backend indirilemedi!${NC}"
     exit 1
@@ -87,7 +88,18 @@ PANEL_NAME=${PANEL_NAME:-NovaCell-3 v4.5}
 
 echo -e "${GREEN}✅ Panel ismi: $PANEL_NAME${NC}"
 
+# 1. HTML tarafını güncelle (Görünen Başlık)
 sed -i "s/NovaCell-3 v4.5/$PANEL_NAME/g" index.html
+
+# 2. Python tarafını güncelle (API'deki Sunucu Adı)
+# app.py içinde 'SERVER_NAME =' ile başlayan satırı bulur ve değiştirir.
+if grep -q "SERVER_NAME =" app.py; then
+    sed -i "s/^SERVER_NAME = .*/SERVER_NAME = \"$PANEL_NAME\"/" app.py
+else
+    # Eğer app.py güncel değilse ve satır yoksa, manuel eklemeye çalışır (Yedek Plan)
+    sed -i "s/sunucu_adi': 'NovaCell-3'/sunucu_adi': '$PANEL_NAME'/g" app.py
+fi
+
 echo ""
 
 echo -e "${GREEN}[7/13] VERITABANI...${NC}"
@@ -129,7 +141,7 @@ fi
 echo -e "${GREEN}[10/13] TELEGRAM YEDEKLEME (İSTEĞE BAĞLI)...${NC}"
 echo ""
 echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
-echo -e "${YELLOW}📱 TELEGRAM YEDEKLEMe KURULUMU (Opsiyonel)${NC}"
+echo -e "${YELLOW}📱 TELEGRAM YEDEKLEME KURULUMU (Opsiyonel)${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
 echo ""
 echo -e "${YELLOW}Telegram'a günlük otomatik yedek göndermek ister misiniz?${NC}"
@@ -173,8 +185,6 @@ BOT_TOKEN="$BOT_TOKEN"
 CHAT_ID="$CHAT_ID"
 EOF
     chmod 600 /root/.novacell-telegram
-    
-    echo -e "${GREEN}✅ Telegram bilgileri kaydedildi${NC}"
     
     cat > /root/novacell-telegram-backup.sh << 'BACKUPSCRIPT'
 #!/bin/bash
@@ -251,7 +261,7 @@ clear
 echo -e "${GREEN}"
 cat << "EOF"
 ╔══════════════════════════════════════════════════════════╗
-║   ✅ KURULUM BAŞARIYLA TAMAMLANDI!                      ║
+║    ✅ KURULUM BAŞARIYLA TAMAMLANDI!                      ║
 ╚══════════════════════════════════════════════════════════╝
 EOF
 echo -e "${NC}"
@@ -267,9 +277,10 @@ echo -e "${GREEN}✅ ÖZELLİKLER:${NC}"
 echo -e "   • 3x-ui ile senkron gün gösterimi"
 echo -e "   • Kota/Süre dolunca otomatik pasif (30 saniye)"
 echo -e "   • Email kontrolü: 4 karakter"
+echo -e "   • Panel Adı: $PANEL_NAME"
 echo ""
 if [ "$TELEGRAM_ENABLED" = true ]; then
-    echo -e "${GREEN}✅ TELEGRAM YEDEKLEMe:${NC}"
+    echo -e "${GREEN}✅ TELEGRAM YEDEKLEME:${NC}"
     echo -e "   • Otomatik yedek: Her gece 04:30"
     echo -e "   • Yedek süresi: 14 gün"
     echo -e "   • Manuel yedek: ${BLUE}bash /root/novacell-telegram-backup.sh${NC}"
