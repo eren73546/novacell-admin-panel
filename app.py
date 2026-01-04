@@ -8,6 +8,14 @@ import secrets
 import time
 import json
 import calendar
+import threading
+
+# ==========================================
+#               AYARLAR
+# ==========================================
+# Sunucu adını buradan değiştirebilirsin:
+SERVER_NAME = "NovaCell-3" 
+# ==========================================
 
 app = Flask(__name__, static_folder='.')
 app.secret_key = secrets.token_hex(32)
@@ -22,7 +30,6 @@ def init_db():
     conn = sqlite3.connect(PANEL_DB)
     c = conn.cursor()
     
-    # Tabloları oluştur
     c.execute('''CREATE TABLE IF NOT EXISTS admin_users
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   username TEXT NOT NULL UNIQUE,
@@ -58,7 +65,6 @@ def init_db():
                   reset_type TEXT DEFAULT 'auto',
                   created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
 
-    # --- KRITIK DUZELTME: EKSIK SUTUN KONTROLU (MIGRATION) ---
     try:
         c.execute("SELECT quota_reset_date FROM user_settings LIMIT 1")
     except sqlite3.OperationalError:
@@ -67,10 +73,8 @@ def init_db():
             c.execute("ALTER TABLE user_settings ADD COLUMN quota_reset_date INTEGER DEFAULT 0")
             print("Sistem: Sütun başarıyla eklendi.")
         except Exception as e:
-            print(f"Sistem: Sütun ekleme hatası (Tablo boş olabilir): {e}")
-    # ---------------------------------------------------------
+            print(f"Sistem: Sütun ekleme hatası: {e}")
 
-    # Admin kullanıcısı oluştur
     c.execute("SELECT COUNT(*) FROM admin_users WHERE username = 'novacell'")
     if c.fetchone()[0] == 0:
         hashed = bcrypt.hashpw('NovaCell25Hakki'.encode('utf-8'), bcrypt.gensalt())
@@ -80,26 +84,44 @@ def init_db():
     conn.close()
 
 def sync_xui_expiry(email, expiry_timestamp_ms):
-    """
-    X-UI Veritabanını (client_traffics) doğrudan günceller.
-    Bu, kullanıcının anında açılmasını/kapanmasını sağlar.
-    """
     try:
         if not os.path.exists(XUI_DB): return
-        
         conn = sqlite3.connect(XUI_DB)
         c = conn.cursor()
-        # client_traffics tablosunu güncelle
         c.execute("UPDATE client_traffics SET expiry_time = ? WHERE email = ?", (expiry_timestamp_ms, email))
         conn.commit()
         conn.close()
-        print(f"X-UI Sync: {email} -> {expiry_timestamp_ms} olarak güncellendi.")
     except Exception as e:
         print(f"X-UI Sync Hatası: {e}")
 
+# --- ARKA PLAN KONTROL MEKANİZMASI ---
+def monitor_loop():
+    """
+    Bu fonksiyon her 30 saniyede bir çalışır.
+    Panel kapalı olsa bile kotası dolanı ve süresi biteni kapatır.
+    VE EN ÖNEMLİSİ: X-UI SERVİSİNİ YENİDEN BAŞLATIR.
+    """
+    print("✅ Arka plan koruma sistemi başlatıldı.")
+    while True:
+        try:
+            # Her iki kontrolü de çalıştır, eğer bir değişiklik olursa restart at
+            restart_needed_quota = check_and_disable_quota_exceeded()
+            restart_needed_expiry = check_and_disable_expired_users()
+
+            if restart_needed_quota or restart_needed_expiry:
+                print("🔄 [MONITOR] Pasife alınan kullanıcılar var, X-UI yeniden başlatılıyor...")
+                os.system("systemctl restart x-ui")
+                print("✅ [MONITOR] X-UI Yeniden başlatıldı, bağlantılar kesildi.")
+            
+        except Exception as e:
+            print(f"⚠️ Monitor Hatası: {e}")
+        
+        # 30 saniye bekle
+        time.sleep(30)
+
 def check_and_disable_quota_exceeded():
     try:
-        if not os.path.exists(XUI_DB): return
+        if not os.path.exists(XUI_DB): return False
         
         conn = sqlite3.connect(XUI_DB)
         conn.row_factory = sqlite3.Row
@@ -123,15 +145,17 @@ def check_and_disable_quota_exceeded():
                 email = client.get('email', '')
                 total_gb = client.get('totalGB', 0)
                 
+                # Eğer kota limiti varsa (0 değilse) ve kullanıcı aktifse
                 if total_gb > 0 and client.get('enable') == True:
                     traffic = traffic_dict.get(email, {'up': 0, 'down': 0})
                     used = (traffic['up'] + traffic['down'])
                     
+                    # Kullanım limiti geçtiyse
                     if used >= total_gb:
                         client['enable'] = False
                         inbound_modified = True
                         modified = True
-                        print(f"Kullanıcı {email} kotası doldu, devre dışı bırakıldı")
+                        print(f"⛔ OTOMATİK ENGEL: {email} kotası doldu!")
             
             if inbound_modified:
                 settings['clients'] = clients
@@ -140,15 +164,16 @@ def check_and_disable_quota_exceeded():
         
         if modified: 
             conn.commit()
-            # X-UI'ı yeniden başlatmaya gerek yok, DB güncellemesi yeterli olabilir ama garanti olsun
-            # os.system('/usr/bin/systemctl reload x-ui') 
         conn.close()
+        
+        return modified # Değişiklik olduysa True döner
     except Exception as e:
         print(f"Kota kontrol hatası: {e}")
+        return False
 
 def check_and_disable_expired_users():
     try:
-        if not os.path.exists(XUI_DB): return
+        if not os.path.exists(XUI_DB): return False
         
         conn = sqlite3.connect(XUI_DB)
         conn.row_factory = sqlite3.Row
@@ -173,7 +198,7 @@ def check_and_disable_expired_users():
                     client['enable'] = False
                     inbound_modified = True
                     modified = True
-                    print(f"Kullanıcı {email} süresi doldu, devre dışı bırakıldı")
+                    print(f"⛔ OTOMATİK ENGEL: {email} süresi doldu!")
             
             if inbound_modified:
                 settings['clients'] = clients
@@ -183,14 +208,14 @@ def check_and_disable_expired_users():
         if modified: 
             conn.commit()
         conn.close()
+        
+        return modified # Değişiklik olduysa True döner
     except Exception as e:
         print(f"Süre kontrol hatası: {e}")
+        return False
 
 def get_xui_users():
     try:
-        check_and_disable_quota_exceeded()
-        check_and_disable_expired_users()
-        
         if not os.path.exists(XUI_DB): return []
         
         conn = sqlite3.connect(XUI_DB)
@@ -278,7 +303,6 @@ def get_xui_users():
                     try:
                         next_date = datetime.strptime(next_payment, '%Y-%m-%d')
                         today = datetime.now()
-                        # Saatleri sıfırla ki sadece gün farkını alalım
                         next_date = next_date.replace(hour=0, minute=0, second=0, microsecond=0)
                         today = today.replace(hour=0, minute=0, second=0, microsecond=0)
                         
@@ -310,7 +334,7 @@ def get_xui_users():
                     'kullanici_adi': email,
                     'email': email,
                     'paket_tipi': paket_tipi,
-                    'sunucu_adi': 'NovaCell-3',
+                    'sunucu_adi': SERVER_NAME,
                     'kota_limit_gb': round(kota_limit, 2) if kota_limit > 0 else "Sınırsız",
                     'kullanilan_kota_gb': round(kullanilan_kota, 2),
                     'toplam_kullanim_gb': round(toplam_kullanim, 2),
@@ -483,7 +507,6 @@ def update_user_settings():
         conn.commit()
         conn.close()
         
-        # --- X-UI TARAFINI GUNCELLE (Sync) ---
         if data.get('quota') is not None or data.get('expiry_date'):
             xui_conn = sqlite3.connect(XUI_DB)
             xui_c = xui_conn.cursor()
@@ -499,7 +522,6 @@ def update_user_settings():
                 for client in clients:
                     if client.get('email') == email:
                         
-                        # KOTA AYARLA
                         if data.get('quota') is not None:
                             quota_gb = float(data.get('quota'))
                             if quota_gb == 0: 
@@ -509,18 +531,15 @@ def update_user_settings():
                             reset_user_quota(email)
                             inbound_changed = True
                         
-                        # TARIH AYARLA VE SYNC ET
                         if data.get('expiry_date'):
                             try:
                                 expiry_dt = datetime.strptime(data.get('expiry_date'), '%Y-%m-%d')
                                 expiry_dt = expiry_dt.replace(hour=23, minute=59, second=59)
                                 new_expiry_ms = int(expiry_dt.timestamp() * 1000)
                                 
-                                # 1. JSON Ayarı
                                 client['expiryTime'] = new_expiry_ms
                                 inbound_changed = True
                                 
-                                # 2. Canlı Tablo Ayarı (MOTOR ICIN ONEMLI)
                                 sync_xui_expiry(email, new_expiry_ms)
                                 
                             except Exception as ex: 
@@ -666,18 +685,14 @@ def add_payment():
         
         reset_user_quota(email)
         
-        # --- X-UI MOTORUNU DA UZAT (YENI EKLENEN KOD) ---
-        # Ödeme alındıysa, kullanıcının süresini de yeni ödeme tarihine kadar uzatalım
         if next_payment:
             try:
                 expiry_dt = datetime.strptime(next_payment, '%Y-%m-%d')
                 expiry_dt = expiry_dt.replace(hour=23, minute=59, second=59)
                 new_expiry_ms = int(expiry_dt.timestamp() * 1000)
                 
-                # 1. Sync fonksiyonunu çağır (client_traffics için)
                 sync_xui_expiry(email, new_expiry_ms)
                 
-                # 2. Inbounds JSON'ı da güncelle
                 xui_conn = sqlite3.connect(XUI_DB)
                 xui_c = xui_conn.cursor()
                 xui_c.execute("SELECT id, settings FROM inbounds")
@@ -689,7 +704,7 @@ def add_payment():
                     for client in clients:
                         if client.get('email') == email:
                             client['expiryTime'] = new_expiry_ms
-                            client['enable'] = True # Süre uzadıysa kullanıcıyı aktif et
+                            client['enable'] = True
                             changed = True
                             break
                     if changed:
@@ -698,7 +713,6 @@ def add_payment():
                         xui_c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_json, inbound_id))
                 xui_conn.commit()
                 xui_conn.close()
-                print(f"Ödeme sonrası X-UI süresi uzatıldı: {email} -> {next_payment}")
             except Exception as e:
                 print(f"Ödeme sonrası süre uzatma hatası: {e}")
         
@@ -827,4 +841,9 @@ def reset_user_quota(email):
 
 if __name__ == '__main__':
     init_db()
+    # --- ARKA PLAN İŞLEMİNİ BAŞLAT ---
+    monitor_thread = threading.Thread(target=monitor_loop)
+    monitor_thread.daemon = True # Ana program kapanırsa bu da kapansın
+    monitor_thread.start()
+    
     app.run(host='0.0.0.0', port=8888, debug=False)
