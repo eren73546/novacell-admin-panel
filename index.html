@@ -12,7 +12,7 @@ clear
 echo -e "${PURPLE}"
 cat << "EOF"
 ╔══════════════════════════════════════════════════════════════╗
-║   🚀 NovaCell-3 v4.6 - KURULUM                               ║
+║   🚀 vdsturk v4.6 - KURULUM                               ║
 ║   ✅ Kullanıcı: novacell / NovaCell25Hakki                   ║
 ║   🔄 3x-ui expiryTime bazlı gün gösterimi                    ║
 ║   ⏰ Kota/Süre dolunca otomatik pasif (30 saniye)            ║
@@ -82,15 +82,15 @@ echo -e "${BLUE}═════════════════════�
 echo ""
 echo -e "${YELLOW}Panel başlığını özelleştirmek ister misiniz?${NC}"
 echo ""
-read -p "Panel ismi girin (boş bırakırsanız 'NovaCell-3 v4.5'): " PANEL_NAME
-PANEL_NAME=${PANEL_NAME:-NovaCell-3 v4.5}
+read -p "Panel ismi girin (boş bırakırsanız 'vdsturk v4.5'): " PANEL_NAME
+PANEL_NAME=${PANEL_NAME:-vdsturk v4.5}
 
 echo -e "${GREEN}✅ Seçilen İsim: $PANEL_NAME${NC}"
 echo -e "${YELLOW}⚙️  Dosyalar düzenleniyor...${NC}"
 
 # --- GÜÇLENDİRİLMİŞ İSİM DEĞİŞTİRME (PYTHON İLE) ---
 # Sed komutu bazen tırnak işaretlerinde hata yapabilir. 
-# Python ile dosyanın içindeki "NovaCell-3" geçen her yeri bulup değiştiriyoruz.
+# Python ile dosyanın içindeki "vdsturk" geçen her yeri bulup değiştiriyoruz.
 python3 -c "
 import sys
 import os
@@ -102,9 +102,9 @@ if os.path.exists('app.py'):
     with open('app.py', 'r', encoding='utf-8') as f:
         content = f.read()
     # Hem tek tırnaklı hem çift tırnaklı varyasyonları, hem de düz metni değiştir
-    content = content.replace(\"'NovaCell-3'\", f\"'{new_name}'\")
-    content = content.replace('\"NovaCell-3\"', f'\"{new_name}\"')
-    content = content.replace('NovaCell-3', new_name)
+    content = content.replace(\"'vdsturk'\", f\"'{new_name}'\")
+    content = content.replace('\"vdsturk\"', f'\"{new_name}\"')
+    content = content.replace('vdsturk', new_name)
     with open('app.py', 'w', encoding='utf-8') as f:
         f.write(content)
     print('✅ app.py güncellendi.')
@@ -113,7 +113,7 @@ if os.path.exists('app.py'):
 if os.path.exists('index.html'):
     with open('index.html', 'r', encoding='utf-8') as f:
         content = f.read()
-    content = content.replace('NovaCell-3', new_name)
+    content = content.replace('vdsturk', new_name)
     with open('index.html', 'w', encoding='utf-8') as f:
         f.write(content)
     print('✅ index.html güncellendi.')
@@ -224,7 +224,7 @@ fi
 
 curl -F document=@"NovaCell-v4.5-$DATE.tar.gz" \
      -F chat_id="$CHAT_ID" \
-     -F caption="📱 NovaCell-3 v4.5 Günlük Yedek — $DATE" \
+     -F caption="📱 vdsturk v4.5 Günlük Yedek — $DATE" \
      "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" >/dev/null 2>&1
 
 find "$BACKUP_DIR" -name "*.tar.gz" -mtime +14 -delete
