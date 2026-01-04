@@ -12,6 +12,9 @@ GitHub Raw CDN Nasıl Çalışır:
 CDN Cache: Dosya 5-10 dakika boyunca cache'lenir
 Sonraki istekler: Cache'den döner (eski versiyon!)
 Alttaki kısmı komple Termius yap eski cacheleri silip yapıyor// HEP ALTTAKİ İLE YAPALIM YÜKLEMELERİ//NotePadd++ ile tüm Novacell-3 leri vdsturk dedim isimlendirme düzeldi
+============================================
+TÜM TESTLERDEN GEÇTİ,  GÜNCELLENMEMİŞ PANELLERDE KULLANICILARI TEK TEK SADECE TEK SEFERLIK KULLANICILARI SON KULLANMA SÜRELERİNE TIKLIYCAS..
+============================================
 # Dosyayı indir
 wget https://raw.githubusercontent.com/eren73546/novacell-admin-panel/main/install-v4.5.sh -O /tmp/install-v4.5.sh
 
