@@ -1,4 +1,4 @@
-# novacell-admin-panel
+# novacell-admin-panel// FINALL 04.04.2026 04:45
 
 bash <(curl -sL https://raw.githubusercontent.com/eren73546/novacell-admin-panel/main/install-v4.5.sh)
 
