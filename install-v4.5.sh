@@ -12,12 +12,12 @@ clear
 echo -e "${PURPLE}"
 cat << "EOF"
 ╔══════════════════════════════════════════════════════════════╗
-║   🚀 NovaCell-3 v4.6 - KURULUM                               ║
+║   🚀 NovaCell-3 v4.7 - KURULUM (FİNAL)                       ║
 ║   ✅ Kullanıcı: novacell / NovaCell25Hakki                   ║
 ║   🔄 3x-ui expiryTime bazlı gün gösterimi                    ║
 ║   ⏰ Kota/Süre dolunca otomatik pasif (30 saniye)            ║
 ║   📱 Telegram günlük yedekleme (opsiyonel)                   ║
-║   🎨 Özelleştirilebilir panel ismi (GARANTİLİ)               ║
+║   🎨 Özelleştirilebilir panel ismi (ZORLAMALI MOD)           ║
 ╚══════════════════════════════════════════════════════════════╝
 EOF
 echo -e "${NC}"
@@ -86,40 +86,57 @@ read -p "Panel ismi girin (boş bırakırsanız 'NovaCell-3 v4.5'): " PANEL_NAME
 PANEL_NAME=${PANEL_NAME:-NovaCell-3 v4.5}
 
 echo -e "${GREEN}✅ Seçilen İsim: $PANEL_NAME${NC}"
-echo -e "${YELLOW}⚙️  Dosyalar düzenleniyor...${NC}"
+echo -e "${YELLOW}⚙️  Dosya içerikleri güncelleniyor...${NC}"
 
-# --- GÜÇLENDİRİLMİŞ İSİM DEĞİŞTİRME (PYTHON İLE) ---
-# Sed komutu bazen tırnak işaretlerinde hata yapabilir. 
-# Python ile dosyanın içindeki "NovaCell-3" geçen her yeri bulup değiştiriyoruz.
+# ==============================================================================
+# KRİTİK DÜZELTME: PYTHON İLE DOĞRUDAN METİN DEĞİŞTİRME
+# GitHub'dan inen dosyadaki sabit isimleri bulup zorla değiştiriyoruz.
+# ==============================================================================
 python3 -c "
 import sys
-import os
 
-new_name = '''$PANEL_NAME'''
+yeni_isim = '''$PANEL_NAME'''
 
-# app.py düzenle
-if os.path.exists('app.py'):
+# 1. APP.PY DÜZENLEME
+try:
     with open('app.py', 'r', encoding='utf-8') as f:
-        content = f.read()
-    # Hem tek tırnaklı hem çift tırnaklı varyasyonları, hem de düz metni değiştir
-    content = content.replace(\"'NovaCell-3'\", f\"'{new_name}'\")
-    content = content.replace('\"NovaCell-3\"', f'\"{new_name}\"')
-    content = content.replace('NovaCell-3', new_name)
+        kod = f.read()
+    
+    # Sabit yazılı ismi bul ve değiştir
+    # 'sunucu_adi': 'NovaCell-3' -> 'sunucu_adi': 'GirdiginizIsim'
+    kod = kod.replace(\"'sunucu_adi': 'NovaCell-3'\", f\"'sunucu_adi': '{yeni_isim}'\")
+    
+    # Eğer başka yerlerde geçiyorsa onları da değiştir
+    kod = kod.replace('\"NovaCell-3\"', f'\"{yeni_isim}\"')
+    
+    # SERVER_NAME değişkeni varsa onu da güncelle
+    if 'SERVER_NAME =' in kod:
+        import re
+        kod = re.sub(r'SERVER_NAME = .*', f'SERVER_NAME = \"{yeni_isim}\"', kod)
+    
     with open('app.py', 'w', encoding='utf-8') as f:
-        f.write(content)
-    print('✅ app.py güncellendi.')
+        f.write(kod)
+    print('✅ app.py içindeki isimler güncellendi.')
+except Exception as e:
+    print(f'❌ app.py düzenleme hatası: {e}')
 
-# index.html düzenle
-if os.path.exists('index.html'):
+# 2. INDEX.HTML DÜZENLEME
+try:
     with open('index.html', 'r', encoding='utf-8') as f:
-        content = f.read()
-    content = content.replace('NovaCell-3', new_name)
+        html = f.read()
+    
+    html = html.replace('NovaCell-3 v4.5', yeni_isim)
+    html = html.replace('NovaCell-3', yeni_isim)
+    
     with open('index.html', 'w', encoding='utf-8') as f:
-        f.write(content)
-    print('✅ index.html güncellendi.')
+        f.write(html)
+    print('✅ index.html içindeki başlıklar güncellendi.')
+except Exception as e:
+    print(f'❌ index.html düzenleme hatası: {e}')
 "
-echo ""
+# ==============================================================================
 
+echo ""
 echo -e "${GREEN}[7/13] VERITABANI...${NC}"
 cd "$INSTALL_DIR"
 source venv/bin/activate
