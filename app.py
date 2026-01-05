@@ -153,8 +153,8 @@ def check_and_disable_quota_exceeded():
         
         if modified: 
             conn.commit()
-            # Değişiklik olduysa reload et (restart'tan daha hafif)
-            os.system('/usr/bin/systemctl reload x-ui')
+            # Değişiklik olduysa x-ui restart et
+            os.system('x-ui restart')
         conn.close()
     except Exception as e:
         print(f"Kota kontrol hatası: {e}")
@@ -478,15 +478,14 @@ def toggle_user():
         conn.commit()
         conn.close()
         
-        # 4. HER İKİ SERVİSİ DE RESTART ET (ZORUNLU!)
-        print(f"Kullanıcı {user_email} durumu değişti, servisler yeniden başlatılıyor...")
-        os.system('/usr/bin/systemctl restart x-ui')
-        os.system('/usr/bin/systemctl restart xray')
+        # 4. X-UI CLI İLE RESTART (TEK KOMUT YETERLİ!)
+        print(f"Kullanıcı {user_email} durumu değişti, x-ui restart ediliyor...")
+        os.system('x-ui restart')
         
         # 5. BİRAZ BEKLE Kİ RESTART TAMAMLANSIN
         time.sleep(3)
         
-        return jsonify({'success': True, 'message': 'Durum güncellendi ve servisler yenilendi!'})
+        return jsonify({'success': True, 'message': 'Durum güncellendi ve x-ui yenilendi!'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -607,13 +606,12 @@ def update_user_settings():
             xui_conn.commit()
             xui_conn.close()
             
-            # X-UI VE XRAY'I YENIDEN BASLAT!
-            print(f"Kullanıcı {email} ayarları güncellendi, servisler yeniden başlatılıyor...")
-            os.system('/usr/bin/systemctl restart x-ui')
-            os.system('/usr/bin/systemctl restart xray')
+            # X-UI CLI İLE RESTART!
+            print(f"Kullanıcı {email} ayarları güncellendi, x-ui restart ediliyor...")
+            os.system('x-ui restart')
             time.sleep(3)
         
-        return jsonify({'success': True, 'message': 'Ayarlar güncellendi ve servisler yenilendi!'})
+        return jsonify({'success': True, 'message': 'Ayarlar güncellendi ve x-ui yenilendi!'})
     except Exception as e:
         print(f"❌ Ayar güncelleme hatası: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -776,10 +774,9 @@ def add_payment():
                 xui_conn.commit()
                 xui_conn.close()
                 
-                # 3. Servisleri yeniden başlat
-                print(f"Ödeme sonrası X-UI süresi uzatıldı ve aktif edildi: {email} -> {next_payment}")
-                os.system('/usr/bin/systemctl restart x-ui')
-                os.system('/usr/bin/systemctl restart xray')
+                # 3. X-UI CLI ile restart
+                print(f"Ödeme sonrası x-ui restart ediliyor: {email} -> {next_payment}")
+                os.system('x-ui restart')
                 time.sleep(3)
                 
             except Exception as e:
