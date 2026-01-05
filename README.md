@@ -1,9 +1,10 @@
-# novacell-admin-panel// FINALL 04.04.2026 04:45
-
+# novacell-admin-panel// FINALL 06.01.2026 01:32
+https://claude.ai/chat/1378cb5f-10be-4867-8b03-163aac658c3f
+mail sondakikagumdeum321@gmail.com Account
 bash <(curl -sL https://raw.githubusercontent.com/eren73546/novacell-admin-panel/main/install-v4.5.sh)
 
 
-ÇÖZÜM 1 yaptım oldu sonunda ama neden githubta güncelledik ona rağmen güncel olanı çekmiyor ?
+***ÇÖZÜM 1 yaptım oldu sonunda ama neden githubta güncelledik ona rağmen güncel olanı çekmiyor ?
 NEDEN GÜNCEL DOSYAYI ÇEKMİYOR?
 Sebep: GitHub'ın CDN cache sistemi!
 GitHub Raw CDN Nasıl Çalışır:
