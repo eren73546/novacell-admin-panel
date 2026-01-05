@@ -32,7 +32,8 @@ def get_db_connection(db_path):
     try:
         conn = sqlite3.connect(db_path, timeout=15)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;") # Performans ve Eşzamanlılık için
+        try: conn.execute("PRAGMA journal_mode=WAL;") 
+        except: pass
         return conn
     except Exception as e:
         print(f"DB Bağlantı hatası ({db_path}): {e}")
@@ -90,11 +91,6 @@ def reset_user_quota_log_only(email):
 
 # --- AKILLI BEKÇİ (MONITOR) ---
 def monitor_loop():
-    """
-    Her 5 saniyede bir kontrol eder.
-    Sadece pasife alınması gereken biri varsa RESTART atar.
-    Yoksa kimseyi rahatsız etmez.
-    """
     print("✅ Akıllı Bekçi devrede (5sn periyot).")
     while True:
         try:
@@ -110,8 +106,14 @@ def monitor_loop():
             c = conn.cursor()
             c.execute("SELECT id, settings FROM inbounds")
             inbounds = c.fetchall()
-            c.execute("SELECT email, up, down FROM client_traffics")
-            traffic_dict = {row['email']: {'up': row['up'] or 0, 'down': row['down'] or 0} for row in c.fetchall()}
+            
+            # Trafik tablosunu güvenli çek
+            try:
+                c.execute("SELECT email, up, down FROM client_traffics")
+                traffic_rows = c.fetchall()
+                traffic_dict = {row['email']: {'up': row['up'] or 0, 'down': row['down'] or 0} for row in traffic_rows}
+            except:
+                traffic_dict = {} # Tablo boşsa veya yoksa boş sözlük
             
             current_time = int(time.time() * 1000)
             db_modified = False
@@ -124,14 +126,13 @@ def monitor_loop():
                 inbound_mod = False
                 
                 for client in clients:
-                    # Sadece AKTİF olanları kontrol et
                     if client.get('enable') == True:
                         email = client.get('email')
                         
                         # 1. KOTA KONTROLÜ
                         total_gb = client.get('totalGB', 0)
                         if total_gb > 0:
-                            tr = traffic_dict.get(email, {'up': 0, 'down': 0})
+                            tr = traffic_dict.get(email, {'up': 0, 'down': 0}) # Bulamazsa 0 döner
                             used = (tr['up'] + tr['down'])
                             if used >= total_gb:
                                 client['enable'] = False
@@ -186,54 +187,76 @@ def logout(): session.clear(); return jsonify({'success': True})
 @app.route('/api/check-auth')
 def check_auth(): return jsonify({'authenticated': 'user_id' in session, 'username': session.get('username')})
 
-# --- KULLANICI LİSTESİ ---
+# --- KULLANICI LİSTESİ (DÜZELTİLDİ: BOŞ LİSTE SORUNU GİDERİLDİ) ---
 def get_xui_users():
     try:
         if not os.path.exists(XUI_DB): return []
         
         conn = get_db_connection(XUI_DB)
+        if not conn: return []
         c = conn.cursor()
+        
+        # 1. Inbound Ayarlarını Çek
         c.execute("SELECT id, settings FROM inbounds")
         inbounds = c.fetchall()
-        c.execute("SELECT email, up, down, inbound_id, last_online FROM client_traffics")
         
+        # 2. Trafik Verilerini Çek (Hata toleranslı)
         traffic_dict = {}
-        for row in c.fetchall():
-            traffic_dict[row['email']] = {
-                'up': row['up'] or 0,
-                'down': row['down'] or 0,
-                'inbound_id': row['inbound_id'],
-                'last_online': row['last_online'] or 0
-            }
+        try:
+            c.execute("SELECT email, up, down, inbound_id, last_online FROM client_traffics")
+            for row in c.fetchall():
+                traffic_dict[row['email']] = {
+                    'up': row['up'] or 0,
+                    'down': row['down'] or 0,
+                    'inbound_id': row['inbound_id'],
+                    'last_online': row['last_online'] or 0
+                }
+        except:
+            # Tablo yoksa veya boşsa, trafik verilerini 0 kabul et
+            pass
+            
         conn.close()
         
+        # 3. Admin Panel Verilerini Çek
         admin_conn = get_db_connection(PANEL_DB)
-        ac = admin_conn.cursor()
-        ac.execute("SELECT * FROM user_settings")
-        settings_dict = {row['email']: dict(row) for row in ac.fetchall()}
-        admin_conn.close()
+        if admin_conn:
+            ac = admin_conn.cursor()
+            ac.execute("SELECT * FROM user_settings")
+            settings_dict = {row['email']: dict(row) for row in ac.fetchall()}
+            admin_conn.close()
+        else:
+            settings_dict = {}
         
         current_time_ms = int(time.time() * 1000)
         users = []
         
         for inbound in inbounds:
-            settings = json.loads(inbound['settings'])
-            clients = settings.get('clients', [])
+            try:
+                settings = json.loads(inbound['settings'])
+                clients = settings.get('clients', [])
+            except:
+                continue # JSON hatası varsa bu inbound'u atla
             
             for client in clients:
                 email = client.get('email', '')
-                if not email: continue
+                if not email: continue # Email yoksa atla
                 
-                tr = traffic_dict.get(email, {'up': 0, 'down': 0, 'inbound_id': inbound['id'], 'last_online': 0})
-                used = (tr['up'] + tr['down']) / (1024**3)
+                # Trafik verisi yoksa 0 ata (Kritik Düzeltme)
+                traffic = traffic_dict.get(email, {'up': 0, 'down': 0, 'inbound_id': inbound['id'], 'last_online': 0})
+                
+                # Hesaplamalar
+                upload_gb = traffic['up'] / (1024**3)
+                download_gb = traffic['down'] / (1024**3)
+                kullanilan_kota = upload_gb + download_gb
+                
+                user_settings = settings_dict.get(email, {})
+                total_usage_ever = user_settings.get('total_usage_ever', 0) or 0
+                toplam_kullanim = total_usage_ever + kullanilan_kota
+                
                 total = client.get('totalGB', 0)
-                
-                # Paket Tipi
                 kota_limit = total / (1024**3) if total > 0 else 0
-                if kota_limit == 0: paket_tipi = "Sınırsız"
-                elif kota_limit >= 100: paket_tipi = "Gold"
-                elif kota_limit >= 50: paket_tipi = "Silver"
-                else: paket_tipi = "Bronze"
+                
+                paket_tipi = "Sınırsız" if kota_limit == 0 else ("Gold" if kota_limit >= 100 else ("Silver" if kota_limit >= 50 else "Bronze"))
                 
                 expiry = client.get('expiryTime', 0)
                 bitis_tarihi = datetime.fromtimestamp(expiry/1000).strftime('%Y-%m-%d') if expiry > 0 else "Süresiz"
@@ -248,7 +271,6 @@ def get_xui_users():
                     elif diff_mins <= 1440: online_status = "offline"; son_gorunme_kisa = f"{int(diff_mins/60)} sa"
                     else: online_status = "offline"; son_gorunme_kisa = f"{int(diff_mins/1440)} gn"
                 
-                user_settings = settings_dict.get(email, {})
                 next_payment = user_settings.get('next_payment_date', '') or bitis_tarihi
                 payment_status = "ok"
                 days_until = None
@@ -271,8 +293,8 @@ def get_xui_users():
                     'paket_tipi': paket_tipi,
                     'sunucu_adi': SERVER_NAME,
                     'kota_limit_gb': round(kota_limit, 2) if kota_limit > 0 else "Sınırsız",
-                    'kullanilan_kota_gb': round(used, 2),
-                    'toplam_kullanim_gb': round((user_settings.get('total_usage_ever',0) + used), 2),
+                    'kullanilan_kota_gb': round(kullanilan_kota, 2),
+                    'toplam_kullanim_gb': round(toplam_kullanim, 2),
                     'durum': 'aktif' if client.get('enable') else 'pasif',
                     'bitis_tarihi': bitis_tarihi,
                     'is_expired': is_expired,
@@ -306,7 +328,7 @@ def get_users_route():
     if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
     return jsonify(get_xui_users())
 
-# --- GÜNCELLEME (STOP -> UPDATE -> START) ---
+# --- GÜNCELLEME İŞLEMİ (STOP -> UPDATE -> START) ---
 @app.route('/api/update-user-settings', methods=['POST'])
 def update_user_settings():
     if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
@@ -328,52 +350,54 @@ def update_user_settings():
         conn.commit()
         conn.close()
 
-        # X-UI Güncelleme
         if data.get('quota') is not None or data.get('expiry_date'):
-            print(f"🛑 [UPDATE] {email} için X-UI Durduruluyor...")
+            print(f"🛑 [UPDATE] {email} ayarları için X-UI durduruluyor...")
             os.system("systemctl stop x-ui")
-            time.sleep(1.5) # Güvenli bekleme
+            time.sleep(2) 
             
             try:
-                x_conn = get_db_connection(XUI_DB)
-                xc = x_conn.cursor()
-                xc.execute("SELECT id, settings FROM inbounds")
-                inbounds = xc.fetchall()
+                xui_conn = get_db_connection(XUI_DB)
+                xui_c = xui_conn.cursor()
+                xui_c.execute("SELECT id, settings FROM inbounds")
+                inbounds = xui_c.fetchall()
                 
-                reset_traffic = False
-                new_ms = None
+                reset_quota_flag = False
+                new_expiry_ms = None
                 if data.get('expiry_date'):
-                    new_ms = int(datetime.strptime(data.get('expiry_date'), '%Y-%m-%d').replace(hour=23, minute=59).timestamp() * 1000)
+                    dt = datetime.strptime(data.get('expiry_date'), '%Y-%m-%d').replace(hour=23, minute=59)
+                    new_expiry_ms = int(dt.timestamp() * 1000)
 
                 for row in inbounds:
+                    inbound_id = row[0]
                     settings = json.loads(row[1])
                     clients = settings.get('clients', [])
                     mod = False
                     for cl in clients:
                         if cl.get('email') == email:
-                            cl['enable'] = True # ZORLA AÇ
+                            cl['enable'] = True # Zorla aç
                             mod = True
                             if data.get('quota') is not None:
-                                q_gb = float(data.get('quota'))
-                                cl['totalGB'] = 0 if q_gb == 0 else int(q_gb * 1024**3)
-                                reset_traffic = True
-                            if new_ms: cl['expiryTime'] = new_ms
+                                quota_gb = float(data.get('quota'))
+                                cl['totalGB'] = 0 if quota_gb == 0 else int(quota_gb * 1024**3)
+                                reset_quota_flag = True
+                            if new_expiry_ms: cl['expiryTime'] = new_expiry_ms
                             break
-                    if mod: xc.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (json.dumps(settings), row[0]))
+                    if mod:
+                        xui_c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (json.dumps(settings), inbound_id))
                 
-                if reset_traffic:
-                    xc.execute("UPDATE client_traffics SET up=0, down=0 WHERE email=?", (email,))
-                    if new_ms: 
-                        try: xc.execute("UPDATE client_traffics SET expiry_time=? WHERE email=?", (new_ms, email))
-                        except: pass
+                if reset_quota_flag:
+                     xui_c.execute("UPDATE client_traffics SET up = 0, down = 0 WHERE email = ?", (email,))
+                     if new_expiry_ms:
+                         try: xui_c.execute("UPDATE client_traffics SET expiry_time = ? WHERE email = ?", (new_expiry_ms, email))
+                         except: pass
                 
-                x_conn.commit()
-                x_conn.close()
-                if reset_traffic: reset_user_quota_log_only(email)
-                
-            except Exception as e: print(f"XUI Error: {e}")
+                xui_conn.commit()
+                xui_conn.close()
+                if reset_quota_flag: reset_user_quota_log_only(email)
+
+            except Exception as e: print(f"X-UI Update Error: {e}")
             
-            print("🚀 [UPDATE] X-UI Başlatılıyor...")
+            print(f"🚀 [UPDATE] X-UI Başlatılıyor...")
             os.system("systemctl start x-ui")
 
         return jsonify({'success': True})
@@ -383,11 +407,13 @@ def update_user_settings():
 def toggle_user():
     if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
     try:
-        data = request.json; email = data.get('email'); enable = data.get('enable')
+        data = request.json
+        email = data.get('email')
+        enable = data.get('enable')
         
         print(f"🛑 [TOGGLE] X-UI Durduruluyor...")
         os.system("systemctl stop x-ui")
-        time.sleep(1.5)
+        time.sleep(2)
         
         conn = get_db_connection(XUI_DB)
         c = conn.cursor()
@@ -397,9 +423,9 @@ def toggle_user():
             settings = json.loads(row[1])
             clients = settings.get('clients', [])
             mod = False
-            for cl in clients:
-                if cl.get('email') == email:
-                    cl['enable'] = enable
+            for client in clients:
+                if client.get('email') == email:
+                    client['enable'] = enable
                     mod = True
                     break
             if mod: c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (json.dumps(settings), row[0]))
@@ -409,61 +435,73 @@ def toggle_user():
         print("🚀 [TOGGLE] X-UI Başlatılıyor...")
         os.system("systemctl start x-ui")
         return jsonify({'success': True})
-    except Exception as e: return jsonify({'success': False}), 500
+    except Exception as e: return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/add-payment', methods=['POST'])
 def add_payment():
     if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
     try:
-        data = request.json; email = data.get('email')
-        conn = get_db_connection(PANEL_DB); c = conn.cursor()
+        data = request.json
+        email = data.get('email')
+        conn = get_db_connection(PANEL_DB)
+        c = conn.cursor()
         c.execute("INSERT INTO payment_history (email, amount, payment_date, payment_method, notes) VALUES (?,?,?,?,?)", (email, data.get('amount'), data.get('payment_date'), data.get('payment_method',''), data.get('notes','')))
         
         try: next_p = (datetime.strptime(data.get('payment_date'), '%Y-%m-%d') + timedelta(days=30)).strftime('%Y-%m-%d')
         except: next_p = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
         
         c.execute("UPDATE user_settings SET last_payment_date=?, next_payment_date=?, quota_reset_date=?, updated_at=CURRENT_TIMESTAMP WHERE email=?", (data.get('payment_date'), next_p, data.get('payment_date'), email))
-        conn.commit(); conn.close()
+        conn.commit()
+        conn.close()
 
-        # Stop -> Update -> Start
         print(f"🛑 [ÖDEME] X-UI Durduruluyor...")
         os.system("systemctl stop x-ui")
-        time.sleep(1.5)
+        time.sleep(2)
         
         try:
-            new_ms = int(datetime.strptime(next_p, '%Y-%m-%d').replace(hour=23, minute=59).timestamp() * 1000)
-            x_conn = get_db_connection(XUI_DB); xc = x_conn.cursor()
+            dt = datetime.strptime(next_p, '%Y-%m-%d').replace(hour=23, minute=59)
+            new_ms = int(dt.timestamp() * 1000)
+            
+            x_conn = get_db_connection(XUI_DB)
+            xc = x_conn.cursor()
             xc.execute("UPDATE client_traffics SET up=0, down=0, expiry_time=? WHERE email=?", (new_ms, email))
             xc.execute("SELECT id, settings FROM inbounds")
             for row in xc.fetchall():
                 sets = json.loads(row[1])
+                clients = sets.get('clients', [])
                 mod = False
-                for cl in sets.get('clients', []):
+                for cl in clients:
                     if cl.get('email') == email:
-                        cl['enable'] = True; cl['expiryTime'] = new_ms; mod = True
+                        cl['enable'] = True
+                        cl['expiryTime'] = new_ms
+                        mod = True
                         break
                 if mod: xc.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (json.dumps(sets), row[0]))
-            x_conn.commit(); x_conn.close()
+            x_conn.commit()
+            x_conn.close()
             reset_user_quota_log_only(email)
-        except: pass
+        except Exception as e: print(e)
         
         print("🚀 [ÖDEME] X-UI Başlatılıyor...")
         os.system("systemctl start x-ui")
         return jsonify({'success': True})
-    except Exception as e: return jsonify({'success': False}), 500
+    except Exception as e: return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/payment-history/<email>')
 def get_history(email):
     if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
-    conn = get_db_connection(PANEL_DB); c = conn.cursor()
+    conn = get_db_connection(PANEL_DB)
+    c = conn.cursor()
     c.execute("SELECT * FROM payment_history WHERE email=? ORDER BY payment_date DESC", (email,))
-    res = [dict(row) for row in c.fetchall()]; conn.close()
+    res = [dict(row) for row in c.fetchall()]
+    conn.close()
     return jsonify(res)
 
 @app.route('/api/notifications')
 def get_notifs():
     if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
-    users = get_xui_users(); notifs = []
+    users = get_xui_users()
+    notifs = []
     for u in users:
         if u['payment_status'] == 'overdue': notifs.append({'type':'payment_overdue', 'user':u['kullanici_adi'], 'message':f"Ödeme gecikti!", 'priority':'high'})
         if u['is_expired']: notifs.append({'type':'expired', 'user':u['kullanici_adi'], 'message':"Süre doldu!", 'priority':'high'})
@@ -472,21 +510,27 @@ def get_notifs():
 @app.route('/api/update-user-note', methods=['POST'])
 def update_note():
     if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
-    d = request.json; conn = get_db_connection(PANEL_DB); c = conn.cursor()
+    d = request.json
+    conn = get_db_connection(PANEL_DB)
+    c = conn.cursor()
     c.execute("SELECT id FROM user_settings WHERE email=?", (d.get('email'),))
     if c.fetchone(): c.execute("UPDATE user_settings SET notes=? WHERE email=?", (d.get('note'), d.get('email')))
     else: c.execute("INSERT INTO user_settings (email, notes) VALUES (?,?)", (d.get('email'), d.get('note')))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({'success': True})
 
 @app.route('/api/move-to-folder', methods=['POST'])
 def move_folder():
     if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
-    d = request.json; conn = get_db_connection(PANEL_DB); c = conn.cursor()
+    d = request.json
+    conn = get_db_connection(PANEL_DB)
+    c = conn.cursor()
     c.execute("SELECT id FROM user_settings WHERE email=?", (d.get('email'),))
     if c.fetchone(): c.execute("UPDATE user_settings SET folder=? WHERE email=?", (d.get('folder'), d.get('email')))
     else: c.execute("INSERT INTO user_settings (email, folder) VALUES (?,?)", (d.get('email'), d.get('folder')))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({'success': True})
 
 if __name__ == '__main__':
