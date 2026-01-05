@@ -160,13 +160,13 @@ def toggle_refresh_user(email):
         
         time.sleep(1)
         
-        # 3. STOP + START (Config yeniden oluştur)
+        # 3. STOP + START (Config yeniden oluştur) - TAM PATH!
         print(f"  🛑 x-ui durduruluyor...")
-        os.system('systemctl stop x-ui')
+        os.system('/usr/bin/systemctl stop x-ui')
         time.sleep(2)
         
         print(f"  ▶️  x-ui başlatılıyor...")
-        os.system('systemctl start x-ui')
+        os.system('/usr/bin/systemctl start x-ui')
         time.sleep(5)
         
         print(f"✅ Toggle refresh tamamlandı: {email}")
@@ -223,9 +223,9 @@ def check_and_disable_quota_exceeded():
         
         if modified: 
             conn.commit()
-            os.system('systemctl stop x-ui')
+            os.system('/usr/bin/systemctl stop x-ui')
             time.sleep(2)
-            os.system('systemctl start x-ui')
+            os.system('/usr/bin/systemctl start x-ui')
             time.sleep(3)
         conn.close()
     except Exception as e:
@@ -553,9 +553,9 @@ def toggle_user():
         if new_enable:
             toggle_refresh_user(user_email)
         else:
-            os.system('systemctl stop x-ui')
+            os.system('/usr/bin/systemctl stop x-ui')
             time.sleep(2)
-            os.system('systemctl start x-ui')
+            os.system('/usr/bin/systemctl start x-ui')
             time.sleep(3)
         
         return jsonify({'success': True, 'message': 'Durum güncellendi ve cache temizlendi!'})
@@ -683,9 +683,9 @@ def update_user_settings():
                 print(f"Kota değişti, toggle refresh yapılıyor: {email}")
                 toggle_refresh_user(email)
             else:
-                os.system('systemctl stop x-ui')
+                os.system('/usr/bin/systemctl stop x-ui')
                 time.sleep(2)
-                os.system('systemctl start x-ui')
+                os.system('/usr/bin/systemctl start x-ui')
                 time.sleep(3)
         
         return jsonify({'success': True, 'message': 'Ayarlar güncellendi ve cache temizlendi!'})
