@@ -153,6 +153,8 @@ def check_and_disable_quota_exceeded():
         
         if modified: 
             conn.commit()
+            # Değişiklik olduysa reload et (restart'tan daha hafif)
+            os.system('/usr/bin/systemctl reload x-ui')
         conn.close()
     except Exception as e:
         print(f"Kota kontrol hatası: {e}")
@@ -439,11 +441,8 @@ def toggle_user():
             conn.close()
             return jsonify({'success': False, 'message': 'Kullanıcı bulunamadı'}), 404
         
-        # 2. CLIENT_TRAFFICS'I DE GUNCELLE (YENİ EKLENEN!)
-        # 3x-ui motoru bu tabloya da bakıyor olabilir
+        # 2. CLIENT_TRAFFICS'I DE GUNCELLE
         if new_enable:
-            # Aktif ediyorsak, expiry_time'ı da kontrol et
-            # Eğer süre dolmuşsa 30 gün uzat
             c.execute("SELECT expiry_time FROM client_traffics WHERE email = ?", (user_email,))
             result = c.fetchone()
             if result:
@@ -451,7 +450,6 @@ def toggle_user():
                 current_time_ms = int(time.time() * 1000)
                 
                 if current_expiry < current_time_ms:
-                    # Süre dolmuş, 30 gün uzat
                     new_expiry = current_time_ms + (30 * 24 * 60 * 60 * 1000)
                     c.execute("UPDATE client_traffics SET expiry_time = ? WHERE email = ?", 
                              (new_expiry, user_email))
@@ -476,14 +474,19 @@ def toggle_user():
                     
                     print(f"Kullanıcı {user_email} aktif edildi ve süre 30 gün uzatıldı")
         
+        # 3. COMMIT VE CLOSE
         conn.commit()
         conn.close()
         
-        # 3. X-UI'YI YENIDEN BASLATMA (OPSIYONEL)
-        # Bazen gerekmiyor ama garanti olsun
+        # 4. HER İKİ SERVİSİ DE RESTART ET (ZORUNLU!)
+        print(f"Kullanıcı {user_email} durumu değişti, servisler yeniden başlatılıyor...")
         os.system('/usr/bin/systemctl restart x-ui')
+        os.system('/usr/bin/systemctl restart xray')
         
-        return jsonify({'success': True, 'message': 'Durum güncellendi!'})
+        # 5. BİRAZ BEKLE Kİ RESTART TAMAMLANSIN
+        time.sleep(3)
+        
+        return jsonify({'success': True, 'message': 'Durum güncellendi ve servisler yenilendi!'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -537,7 +540,7 @@ def update_user_settings():
         conn.commit()
         conn.close()
         
-        # --- X-UI TARAFINI GUNCELLE (Sync) ---
+        # --- X-UI TARAFINI GUNCELLE (KRITIK KISIM!) ---
         if data.get('quota') is not None or data.get('expiry_date'):
             xui_conn = sqlite3.connect(XUI_DB)
             xui_c = xui_conn.cursor()
@@ -560,8 +563,14 @@ def update_user_settings():
                                 client['totalGB'] = 0
                             else: 
                                 client['totalGB'] = int(quota_gb * 1024 * 1024 * 1024)
-                            reset_user_quota(email)
+                            
+                            # KULLANICIYI AKTIF ET!
+                            client['enable'] = True
+                            
                             inbound_changed = True
+                            
+                            # Kotayı sıfırla
+                            reset_user_quota(email)
                         
                         # TARIH AYARLA VE SYNC ET
                         if data.get('expiry_date'):
@@ -572,9 +581,13 @@ def update_user_settings():
                                 
                                 # 1. JSON Ayarı
                                 client['expiryTime'] = new_expiry_ms
+                                
+                                # 2. Kullanıcıyı aktif et
+                                client['enable'] = True
+                                
                                 inbound_changed = True
                                 
-                                # 2. Canlı Tablo Ayarı (MOTOR ICIN ONEMLI)
+                                # 3. Canlı Tablo Ayarı (MOTOR ICIN ONEMLI)
                                 sync_xui_expiry(email, new_expiry_ms)
                                 
                             except Exception as ex: 
@@ -585,13 +598,24 @@ def update_user_settings():
                 if inbound_changed:
                     settings['clients'] = clients
                     new_settings_json = json.dumps(settings, ensure_ascii=False)
-                    xui_c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_settings_json, inbound_id))
+                    
+                    # KRITIK: INBOUNDS TABLOSUNU GUNCELLE!
+                    xui_c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", 
+                                 (new_settings_json, inbound_id))
+                    print(f"✅ Inbound {inbound_id} güncellendi: {email}")
             
             xui_conn.commit()
             xui_conn.close()
+            
+            # X-UI VE XRAY'I YENIDEN BASLAT!
+            print(f"Kullanıcı {email} ayarları güncellendi, servisler yeniden başlatılıyor...")
+            os.system('/usr/bin/systemctl restart x-ui')
+            os.system('/usr/bin/systemctl restart xray')
+            time.sleep(3)
         
-        return jsonify({'success': True, 'message': 'Ayarlar güncellendi!'})
+        return jsonify({'success': True, 'message': 'Ayarlar güncellendi ve servisler yenilendi!'})
     except Exception as e:
+        print(f"❌ Ayar güncelleme hatası: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/move-to-folder', methods=['POST'])
@@ -720,8 +744,7 @@ def add_payment():
         
         reset_user_quota(email)
         
-        # --- X-UI MOTORUNU DA UZAT (YENI EKLENEN KOD) ---
-        # Ödeme alındıysa, kullanıcının süresini de yeni ödeme tarihine kadar uzatalım
+        # --- X-UI MOTORUNU DA UZAT VE AKTIF ET ---
         if next_payment:
             try:
                 expiry_dt = datetime.strptime(next_payment, '%Y-%m-%d')
@@ -752,11 +775,17 @@ def add_payment():
                         xui_c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_json, inbound_id))
                 xui_conn.commit()
                 xui_conn.close()
-                print(f"Ödeme sonrası X-UI süresi uzatıldı: {email} -> {next_payment}")
+                
+                # 3. Servisleri yeniden başlat
+                print(f"Ödeme sonrası X-UI süresi uzatıldı ve aktif edildi: {email} -> {next_payment}")
+                os.system('/usr/bin/systemctl restart x-ui')
+                os.system('/usr/bin/systemctl restart xray')
+                time.sleep(3)
+                
             except Exception as e:
                 print(f"Ödeme sonrası süre uzatma hatası: {e}")
         
-        return jsonify({'success': True, 'message': 'Ödeme kaydedildi, kota sıfırlandı ve süre uzatıldı!'})
+        return jsonify({'success': True, 'message': 'Ödeme kaydedildi, kota sıfırlandı, süre uzatıldı ve kullanıcı aktif edildi!'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
