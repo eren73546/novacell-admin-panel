@@ -22,7 +22,6 @@ def init_db():
     conn = sqlite3.connect(PANEL_DB)
     c = conn.cursor()
     
-    # Tabloları oluştur
     c.execute('''CREATE TABLE IF NOT EXISTS admin_users
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   username TEXT NOT NULL UNIQUE,
@@ -58,7 +57,6 @@ def init_db():
                   reset_type TEXT DEFAULT 'auto',
                   created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
 
-    # --- KRITIK DUZELTME: EKSIK SUTUN KONTROLU (MIGRATION) ---
     try:
         c.execute("SELECT quota_reset_date FROM user_settings LIMIT 1")
     except sqlite3.OperationalError:
@@ -67,9 +65,8 @@ def init_db():
             c.execute("ALTER TABLE user_settings ADD COLUMN quota_reset_date INTEGER DEFAULT 0")
             print("Sistem: Sütun başarıyla eklendi.")
         except Exception as e:
-            print(f"Sistem: Sütun ekleme hatası (Tablo boş olabilir): {e}")
+            print(f"Sistem: Sütun ekleme hatası: {e}")
 
-    # Admin kullanıcısı oluştur
     c.execute("SELECT COUNT(*) FROM admin_users WHERE username = 'novacell'")
     if c.fetchone()[0] == 0:
         hashed = bcrypt.hashpw('NovaCell25Hakki'.encode('utf-8'), bcrypt.gensalt())
@@ -79,9 +76,7 @@ def init_db():
     conn.close()
 
 def sync_xui_expiry(email, expiry_timestamp_ms):
-    """
-    X-UI Veritabanını (client_traffics) doğrudan günceller.
-    """
+    """X-UI client_traffics tablosunu güncelle"""
     try:
         if not os.path.exists(XUI_DB): return
         
@@ -90,14 +85,15 @@ def sync_xui_expiry(email, expiry_timestamp_ms):
         c.execute("UPDATE client_traffics SET expiry_time = ? WHERE email = ?", (expiry_timestamp_ms, email))
         conn.commit()
         conn.close()
-        print(f"X-UI Sync: {email} -> {expiry_timestamp_ms} olarak güncellendi.")
+        print(f"X-UI Sync: {email} -> {expiry_timestamp_ms}")
     except Exception as e:
         print(f"X-UI Sync Hatası: {e}")
 
 def toggle_refresh_user(email):
     """
-    Kullanıcıyı toggle ederek cache'i temizle (kapat-aç)
-    Bu, 3x-ui'deki manuel toggle'ı taklit eder
+    Kullanıcıyı toggle ederek cache'i temizle
+    systemctl stop + start ile config'i zorla yeniden oluştur
+    İki tabloyu da güncelle: inbounds.settings + client_traffics
     """
     try:
         if not os.path.exists(XUI_DB):
@@ -108,7 +104,7 @@ def toggle_refresh_user(email):
         conn = sqlite3.connect(XUI_DB)
         c = conn.cursor()
         
-        # 1. ADIM: ÖNCE PASIF ET
+        # 1. PASIF ET (hem JSON hem client_traffics)
         c.execute("SELECT id, settings FROM inbounds")
         inbounds = c.fetchall()
         
@@ -116,26 +112,26 @@ def toggle_refresh_user(email):
             inbound_id = inbound[0]
             settings = json.loads(inbound[1])
             clients = settings.get('clients', [])
-            changed = False
             
             for client in clients:
                 if client.get('email') == email:
                     client['enable'] = False
-                    changed = True
                     break
             
-            if changed:
-                settings['clients'] = clients
-                new_json = json.dumps(settings, ensure_ascii=False)
-                c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_json, inbound_id))
-                conn.commit()
-                print(f"  ↓ {email} pasif edildi")
-                break
+            settings['clients'] = clients
+            new_json = json.dumps(settings, ensure_ascii=False)
+            c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_json, inbound_id))
+            conn.commit()
+            print(f"  ↓ {email} pasif edildi (JSON)")
+            break
         
-        # Biraz bekle (önemli!)
-        time.sleep(0.5)
+        c.execute("UPDATE client_traffics SET enable = 0 WHERE email = ?", (email,))
+        conn.commit()
+        print(f"  ↓ {email} pasif edildi (client_traffics)")
         
-        # 2. ADIM: TEKRAR AKTİF ET
+        time.sleep(1)
+        
+        # 2. AKTİF ET (hem JSON hem client_traffics)
         c.execute("SELECT id, settings FROM inbounds")
         inbounds = c.fetchall()
         
@@ -143,28 +139,35 @@ def toggle_refresh_user(email):
             inbound_id = inbound[0]
             settings = json.loads(inbound[1])
             clients = settings.get('clients', [])
-            changed = False
             
             for client in clients:
                 if client.get('email') == email:
                     client['enable'] = True
-                    changed = True
                     break
             
-            if changed:
-                settings['clients'] = clients
-                new_json = json.dumps(settings, ensure_ascii=False)
-                c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_json, inbound_id))
-                conn.commit()
-                print(f"  ↑ {email} aktif edildi")
-                break
+            settings['clients'] = clients
+            new_json = json.dumps(settings, ensure_ascii=False)
+            c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_json, inbound_id))
+            conn.commit()
+            print(f"  ↑ {email} aktif edildi (JSON)")
+            break
+        
+        c.execute("UPDATE client_traffics SET enable = 1 WHERE email = ?", (email,))
+        conn.commit()
+        print(f"  ↑ {email} aktif edildi (client_traffics)")
         
         conn.close()
         
-        # 3. ADIM: X-UI RESTART (TAM PATH!)
-        print(f"  🔄 x-ui restart ediliyor...")
-        os.system('/usr/bin/x-ui restart')
-        time.sleep(3)
+        time.sleep(1)
+        
+        # 3. STOP + START (Config yeniden oluştur)
+        print(f"  🛑 x-ui durduruluyor...")
+        os.system('systemctl stop x-ui')
+        time.sleep(2)
+        
+        print(f"  ▶️  x-ui başlatılıyor...")
+        os.system('systemctl start x-ui')
+        time.sleep(5)
         
         print(f"✅ Toggle refresh tamamlandı: {email}")
         return True
@@ -199,7 +202,6 @@ def check_and_disable_quota_exceeded():
                 email = client.get('email', '')
                 total_gb = client.get('totalGB', 0)
                 
-                # SADECE KOTA KONTROLU - KOTA DOLMUSSA PASIF ET
                 if total_gb > 0 and client.get('enable') == True:
                     traffic = traffic_dict.get(email, {'up': 0, 'down': 0})
                     used = (traffic['up'] + traffic['down'])
@@ -208,6 +210,10 @@ def check_and_disable_quota_exceeded():
                         client['enable'] = False
                         inbound_modified = True
                         modified = True
+                        
+                        # CLIENT_TRAFFICS'I DE PASIF ET (KRITIK!)
+                        c.execute("UPDATE client_traffics SET enable = 0 WHERE email = ?", (email,))
+                        
                         print(f"Kullanıcı {email} kotası doldu, devre dışı bırakıldı")
             
             if inbound_modified:
@@ -217,7 +223,10 @@ def check_and_disable_quota_exceeded():
         
         if modified: 
             conn.commit()
-            os.system('/usr/bin/x-ui restart')
+            os.system('systemctl stop x-ui')
+            time.sleep(2)
+            os.system('systemctl start x-ui')
+            time.sleep(3)
         conn.close()
     except Exception as e:
         print(f"Kota kontrol hatası: {e}")
@@ -502,7 +511,10 @@ def toggle_user():
             conn.close()
             return jsonify({'success': False, 'message': 'Kullanıcı bulunamadı'}), 404
         
+        # CLIENT_TRAFFICS'I DE GUNCELLE (KRITIK!)
         if new_enable:
+            c.execute("UPDATE client_traffics SET enable = 1 WHERE email = ?", (user_email,))
+            
             c.execute("SELECT expiry_time FROM client_traffics WHERE email = ?", (user_email,))
             result = c.fetchone()
             if result:
@@ -532,6 +544,8 @@ def toggle_user():
                             break
                     
                     print(f"Kullanıcı {user_email} aktif edildi ve süre 30 gün uzatıldı")
+        else:
+            c.execute("UPDATE client_traffics SET enable = 0 WHERE email = ?", (user_email,))
         
         conn.commit()
         conn.close()
@@ -539,7 +553,9 @@ def toggle_user():
         if new_enable:
             toggle_refresh_user(user_email)
         else:
-            os.system('/usr/bin/x-ui restart')
+            os.system('systemctl stop x-ui')
+            time.sleep(2)
+            os.system('systemctl start x-ui')
             time.sleep(3)
         
         return jsonify({'success': True, 'message': 'Durum güncellendi ve cache temizlendi!'})
@@ -612,18 +628,29 @@ def update_user_settings():
                 for client in clients:
                     if client.get('email') == email:
                         
+                        # KOTA AYARLA
                         if data.get('quota') is not None:
                             quota_gb = float(data.get('quota'))
-                            if quota_gb == 0: 
-                                client['totalGB'] = 0
-                            else: 
-                                client['totalGB'] = int(quota_gb * 1024 * 1024 * 1024)
+                            quota_bytes = int(quota_gb * 1024 * 1024 * 1024) if quota_gb > 0 else 0
                             
+                            # 1. JSON'U GUNCELLE
+                            client['totalGB'] = quota_bytes
                             client['enable'] = True
+                            
+                            # 2. CLIENT_TRAFFICS'I DE GUNCELLE (KRITIK!)
+                            xui_c.execute("""UPDATE client_traffics 
+                                             SET total = ?, enable = 1, up = 0, down = 0 
+                                             WHERE email = ?""", 
+                                          (quota_bytes, email))
+                            
                             inbound_changed = True
                             quota_changed = True
+                            
                             reset_user_quota(email)
+                            
+                            print(f"✅ Kota güncellendi: {email} -> {quota_gb} GB (hem JSON hem client_traffics)")
                         
+                        # TARIH AYARLA VE SYNC ET
                         if data.get('expiry_date'):
                             try:
                                 expiry_dt = datetime.strptime(data.get('expiry_date'), '%Y-%m-%d')
@@ -632,7 +659,9 @@ def update_user_settings():
                                 
                                 client['expiryTime'] = new_expiry_ms
                                 client['enable'] = True
+                                
                                 inbound_changed = True
+                                
                                 sync_xui_expiry(email, new_expiry_ms)
                                 
                             except Exception as ex: 
@@ -654,7 +683,9 @@ def update_user_settings():
                 print(f"Kota değişti, toggle refresh yapılıyor: {email}")
                 toggle_refresh_user(email)
             else:
-                os.system('/usr/bin/x-ui restart')
+                os.system('systemctl stop x-ui')
+                time.sleep(2)
+                os.system('systemctl start x-ui')
                 time.sleep(3)
         
         return jsonify({'success': True, 'message': 'Ayarlar güncellendi ve cache temizlendi!'})
@@ -814,6 +845,13 @@ def add_payment():
                         settings['clients'] = clients
                         new_json = json.dumps(settings, ensure_ascii=False)
                         xui_c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_json, inbound_id))
+                
+                # CLIENT_TRAFFICS'I DE GUNCELLE (KRITIK!)
+                xui_c.execute("""UPDATE client_traffics 
+                                 SET enable = 1, up = 0, down = 0, expiry_time = ?
+                                 WHERE email = ?""", 
+                              (new_expiry_ms, email))
+                
                 xui_conn.commit()
                 xui_conn.close()
                 
