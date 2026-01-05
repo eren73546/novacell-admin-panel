@@ -123,6 +123,7 @@ def check_and_disable_quota_exceeded():
                 email = client.get('email', '')
                 total_gb = client.get('totalGB', 0)
                 
+                # KOTA KONTROLU: KOTA DOLMUSSA PASIF ET
                 if total_gb > 0 and client.get('enable') == True:
                     traffic = traffic_dict.get(email, {'up': 0, 'down': 0})
                     used = (traffic['up'] + traffic['down'])
@@ -132,6 +133,18 @@ def check_and_disable_quota_exceeded():
                         inbound_modified = True
                         modified = True
                         print(f"Kullanıcı {email} kotası doldu, devre dışı bırakıldı")
+                
+                # YENI EKLENEN: KOTA ALTINDAYSA VE PASIFSE OTOMATIK AKTIF ET!
+                elif total_gb > 0 and client.get('enable') == False:
+                    traffic = traffic_dict.get(email, {'up': 0, 'down': 0})
+                    used = (traffic['up'] + traffic['down'])
+                    
+                    # Kota altındaysa otomatik aktif et
+                    if used < total_gb:
+                        client['enable'] = True
+                        inbound_modified = True
+                        modified = True
+                        print(f"Kullanıcı {email} kota altında, otomatik aktif edildi")
             
             if inbound_modified:
                 settings['clients'] = clients
@@ -140,8 +153,6 @@ def check_and_disable_quota_exceeded():
         
         if modified: 
             conn.commit()
-            # X-UI'ı yeniden başlatmaya gerek yok, DB güncellemesi yeterli olabilir ama garanti olsun
-            # os.system('/usr/bin/systemctl reload x-ui') 
         conn.close()
     except Exception as e:
         print(f"Kota kontrol hatası: {e}")
@@ -403,6 +414,8 @@ def toggle_user():
         
         conn = sqlite3.connect(XUI_DB)
         c = conn.cursor()
+        
+        # 1. INBOUNDS JSON'UNU GUNCELLE
         c.execute("SELECT id, settings FROM inbounds")
         inbounds = c.fetchall()
         
@@ -426,9 +439,50 @@ def toggle_user():
             conn.close()
             return jsonify({'success': False, 'message': 'Kullanıcı bulunamadı'}), 404
         
+        # 2. CLIENT_TRAFFICS'I DE GUNCELLE (YENİ EKLENEN!)
+        # 3x-ui motoru bu tabloya da bakıyor olabilir
+        if new_enable:
+            # Aktif ediyorsak, expiry_time'ı da kontrol et
+            # Eğer süre dolmuşsa 30 gün uzat
+            c.execute("SELECT expiry_time FROM client_traffics WHERE email = ?", (user_email,))
+            result = c.fetchone()
+            if result:
+                current_expiry = result[0] or 0
+                current_time_ms = int(time.time() * 1000)
+                
+                if current_expiry < current_time_ms:
+                    # Süre dolmuş, 30 gün uzat
+                    new_expiry = current_time_ms + (30 * 24 * 60 * 60 * 1000)
+                    c.execute("UPDATE client_traffics SET expiry_time = ? WHERE email = ?", 
+                             (new_expiry, user_email))
+                    
+                    # Inbounds JSON'undaki expiryTime'ı da güncelle
+                    c.execute("SELECT id, settings FROM inbounds")
+                    for inbound in c.fetchall():
+                        inbound_id = inbound[0]
+                        settings = json.loads(inbound[1])
+                        clients = settings.get('clients', [])
+                        changed = False
+                        for client in clients:
+                            if client.get('email') == user_email:
+                                client['expiryTime'] = new_expiry
+                                changed = True
+                                break
+                        if changed:
+                            settings['clients'] = clients
+                            new_json = json.dumps(settings, ensure_ascii=False)
+                            c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_json, inbound_id))
+                            break
+                    
+                    print(f"Kullanıcı {user_email} aktif edildi ve süre 30 gün uzatıldı")
+        
         conn.commit()
         conn.close()
+        
+        # 3. X-UI'YI YENIDEN BASLATMA (OPSIYONEL)
+        # Bazen gerekmiyor ama garanti olsun
         os.system('/usr/bin/systemctl restart x-ui')
+        
         return jsonify({'success': True, 'message': 'Durum güncellendi!'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
