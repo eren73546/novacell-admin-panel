@@ -13,7 +13,6 @@ import threading
 # ==========================================
 #               AYARLAR
 # ==========================================
-# Sunucu adını buradan değiştirebilirsin:
 SERVER_NAME = "NovaCell-3" 
 # ==========================================
 
@@ -22,99 +21,59 @@ app.secret_key = secrets.token_hex(32)
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=12)
 CORS(app, supports_credentials=True)
 
-# --- VERITABANI DOSYA YOLLARI ---
+# --- DOSYA YOLLARI ---
 PANEL_DB = 'admin_panel.db'
 XUI_DB = '/etc/x-ui/x-ui.db'
 
-def init_db():
+def get_db_connection(db_path):
     """
-    Veritabanı tablolarını ve eksik sütunları oluşturur.
+    Veritabanı bağlantısı (WAL Modu Aktif - Kilitlenmeyi önler)
     """
-    conn = sqlite3.connect(PANEL_DB)
-    c = conn.cursor()
-    
-    # Yönetici Tablosu
-    c.execute('''CREATE TABLE IF NOT EXISTS admin_users
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  username TEXT NOT NULL UNIQUE,
-                  password_hash TEXT NOT NULL)''')
-                  
-    # Kullanıcı Ayarları Tablosu
-    c.execute('''CREATE TABLE IF NOT EXISTS user_settings
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  email TEXT NOT NULL UNIQUE,
-                  monthly_price REAL DEFAULT 0,
-                  last_payment_date TEXT,
-                  next_payment_date TEXT,
-                  notes TEXT,
-                  quota_start_date TEXT,
-                  quota_reset_date TEXT,
-                  total_usage_ever REAL DEFAULT 0,
-                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                  folder TEXT DEFAULT 'Tümü')''')
-                  
-    # Ödeme Geçmişi Tablosu
-    c.execute('''CREATE TABLE IF NOT EXISTS payment_history
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  email TEXT NOT NULL,
-                  amount REAL NOT NULL,
-                  payment_date TEXT NOT NULL,
-                  payment_method TEXT,
-                  notes TEXT,
-                  created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
-                  
-    # Kota Sıfırlama Logları
-    c.execute('''CREATE TABLE IF NOT EXISTS quota_reset_log
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  email TEXT NOT NULL,
-                  reset_date TEXT NOT NULL,
-                  reset_type TEXT DEFAULT 'auto',
-                  created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
+    try:
+        conn = sqlite3.connect(db_path, timeout=15)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;") # Performans ve Eşzamanlılık için
+        return conn
+    except Exception as e:
+        print(f"DB Bağlantı hatası ({db_path}): {e}")
+        return None
 
-    # Migration: Eksik sütun kontrolü (Eski sürümlerden geçiş için)
+def init_db():
+    conn = get_db_connection(PANEL_DB)
+    if not conn: return
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS admin_users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS user_settings (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL UNIQUE, monthly_price REAL DEFAULT 0, last_payment_date TEXT, next_payment_date TEXT, notes TEXT, quota_start_date TEXT, quota_reset_date TEXT, total_usage_ever REAL DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, folder TEXT DEFAULT 'Tümü')''')
+    c.execute('''CREATE TABLE IF NOT EXISTS payment_history (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL, amount REAL NOT NULL, payment_date TEXT NOT NULL, payment_method TEXT, notes TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS quota_reset_log (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL, reset_date TEXT NOT NULL, reset_type TEXT DEFAULT 'auto', created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
+
     try:
         c.execute("SELECT quota_reset_date FROM user_settings LIMIT 1")
     except sqlite3.OperationalError:
-        print("Sistem: quota_reset_date sütunu eksik, otomatik ekleniyor...")
-        try:
-            c.execute("ALTER TABLE user_settings ADD COLUMN quota_reset_date INTEGER DEFAULT 0")
-            print("Sistem: Sütun başarıyla eklendi.")
-        except Exception as e:
-            print(f"Sistem: Sütun ekleme hatası: {e}")
+        try: c.execute("ALTER TABLE user_settings ADD COLUMN quota_reset_date INTEGER DEFAULT 0")
+        except: pass
 
-    # Varsayılan Admin Kullanıcısı
     c.execute("SELECT COUNT(*) FROM admin_users WHERE username = 'novacell'")
     if c.fetchone()[0] == 0:
         hashed = bcrypt.hashpw('NovaCell25Hakki'.encode('utf-8'), bcrypt.gensalt())
         c.execute("INSERT INTO admin_users (username, password_hash) VALUES (?, ?)", ('novacell', hashed))
-    
     conn.commit()
     conn.close()
 
-# --- YARDIMCI FONKSİYONLAR ---
-
+# --- LOGLAMA ---
 def reset_user_quota_log_only(email):
-    """
-    Bu fonksiyon X-UI veritabanına dokunmaz (onu ana fonksiyon yapar).
-    Sadece Admin Paneli veritabanındaki (admin_panel.db) sayaçları ve logları günceller.
-    """
     try:
-        # Önce X-UI'dan son kullanılan veriyi alıp toplam kullanıma ekleyelim
-        conn_xui = sqlite3.connect(XUI_DB)
+        conn_xui = get_db_connection(XUI_DB)
         c_xui = conn_xui.cursor()
         c_xui.execute("SELECT up, down FROM client_traffics WHERE email = ?", (email,))
         res = c_xui.fetchone()
         conn_xui.close()
         
         current_gb = 0
-        if res:
-            current_gb = ((res[0] or 0) + (res[1] or 0)) / (1024**3)
+        if res: current_gb = ((res[0] or 0) + (res[1] or 0)) / (1024**3)
 
-        admin_conn = sqlite3.connect(PANEL_DB)
+        admin_conn = get_db_connection(PANEL_DB)
         c = admin_conn.cursor()
-        
-        # Toplam kullanımı güncelle
         c.execute("SELECT total_usage_ever FROM user_settings WHERE email = ?", (email,))
         row = c.fetchone()
         if row:
@@ -123,44 +82,40 @@ def reset_user_quota_log_only(email):
         else:
             c.execute("INSERT INTO user_settings (email, total_usage_ever) VALUES (?, ?)", (email, current_gb))
             
-        # Log tablosuna ekle
         c.execute("INSERT INTO quota_reset_log (email, reset_date, reset_type) VALUES (?, ?, ?)", 
                  (email, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'manual'))
-        
         admin_conn.commit()
         admin_conn.close()
-    except Exception as e:
-        print(f"Loglama hatası: {e}")
+    except: pass
 
-# --- ARKA PLAN BEKÇİSİ (MONITOR) ---
+# --- AKILLI BEKÇİ (MONITOR) ---
 def monitor_loop():
     """
-    Her 30 saniyede bir çalışır.
-    Kotası dolan veya süresi biten kullanıcıları tespit eder.
-    Tespit ederse:
-    1. Veritabanında kullanıcıyı PASİF (enable=false) yapar.
-    2. X-UI Servisini YENİDEN BAŞLATIR (Kesin Engelleme).
+    Her 5 saniyede bir kontrol eder.
+    Sadece pasife alınması gereken biri varsa RESTART atar.
+    Yoksa kimseyi rahatsız etmez.
     """
-    print("✅ Arka plan koruma sistemi başlatıldı (Periyot: 30sn).")
+    print("✅ Akıllı Bekçi devrede (5sn periyot).")
     while True:
         try:
             if not os.path.exists(XUI_DB):
-                time.sleep(30)
+                time.sleep(5)
                 continue
                 
-            conn = sqlite3.connect(XUI_DB)
-            conn.row_factory = sqlite3.Row
+            conn = get_db_connection(XUI_DB)
+            if not conn:
+                time.sleep(5)
+                continue
+
             c = conn.cursor()
-            
-            # Tüm ayarları ve trafik verilerini çek
             c.execute("SELECT id, settings FROM inbounds")
             inbounds = c.fetchall()
-            
             c.execute("SELECT email, up, down FROM client_traffics")
             traffic_dict = {row['email']: {'up': row['up'] or 0, 'down': row['down'] or 0} for row in c.fetchall()}
             
             current_time = int(time.time() * 1000)
             db_modified = False
+            banned_users = []
             
             for inbound in inbounds:
                 inbound_id = inbound['id']
@@ -169,7 +124,7 @@ def monitor_loop():
                 inbound_mod = False
                 
                 for client in clients:
-                    # Sadece AKTİF olanları kontrol et (Zaten pasifse işlem yapma)
+                    # Sadece AKTİF olanları kontrol et
                     if client.get('enable') == True:
                         email = client.get('email')
                         
@@ -178,13 +133,11 @@ def monitor_loop():
                         if total_gb > 0:
                             tr = traffic_dict.get(email, {'up': 0, 'down': 0})
                             used = (tr['up'] + tr['down'])
-                            
-                            # Eğer kullanım limiti geçtiyse
                             if used >= total_gb:
                                 client['enable'] = False
                                 inbound_mod = True
                                 db_modified = True
-                                print(f"⛔ OTOMATİK ENGEL (Kota Doldu): {email}")
+                                banned_users.append(f"{email} (Kota)")
                         
                         # 2. SÜRE KONTROLÜ
                         expiry = client.get('expiryTime', 0)
@@ -192,43 +145,58 @@ def monitor_loop():
                             client['enable'] = False
                             inbound_mod = True
                             db_modified = True
-                            print(f"⛔ OTOMATİK ENGEL (Süre Bitti): {email}")
+                            banned_users.append(f"{email} (Süre)")
 
-                # Eğer bu inbound içinde değişiklik olduysa veritabanına yaz
                 if inbound_mod:
-                    new_settings_json = json.dumps(settings, ensure_ascii=False)
-                    c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_settings_json, inbound_id))
+                    c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (json.dumps(settings), inbound_id))
             
             if db_modified:
                 conn.commit()
-                print("🔄 [MONITOR] Pasife alınan kullanıcılar var, X-UI yeniden başlatılıyor...")
+                print(f"🚫 [MONITOR] Tespit edildi: {', '.join(banned_users)}")
+                print("🔄 [MONITOR] Kurallar gereği X-UI Restart ediliyor...")
                 os.system("systemctl restart x-ui")
-                print("✅ [MONITOR] Restart tamamlandı.")
             
             conn.close()
             
         except Exception as e:
-            print(f"⚠️ Monitor Hatası: {e}")
+            print(f"Monitor Hatası: {e}")
         
-        # 30 saniye bekle
-        time.sleep(30)
+        time.sleep(5)
 
-# --- DETAYLI KULLANICI LİSTESİ ÇEKME ---
+# --- API ---
+@app.route('/')
+def index(): return send_from_directory('.', 'index.html')
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.json
+    conn = get_db_connection(PANEL_DB)
+    c = conn.cursor()
+    c.execute("SELECT * FROM admin_users WHERE username = ?", (data.get('username'),))
+    user = c.fetchone()
+    conn.close()
+    if user and bcrypt.checkpw(data.get('password').encode('utf-8'), user['password_hash']):
+        session['user_id'] = user['id']; session['username'] = user['username']; session.permanent = True
+        return jsonify({'success': True})
+    return jsonify({'success': False}), 401
+
+@app.route('/api/logout', methods=['POST'])
+def logout(): session.clear(); return jsonify({'success': True})
+
+@app.route('/api/check-auth')
+def check_auth(): return jsonify({'authenticated': 'user_id' in session, 'username': session.get('username')})
+
+# --- KULLANICI LİSTESİ ---
 def get_xui_users():
     try:
-        if not os.path.exists(XUI_DB): 
-            return []
+        if not os.path.exists(XUI_DB): return []
         
-        conn = sqlite3.connect(XUI_DB)
-        conn.row_factory = sqlite3.Row
+        conn = get_db_connection(XUI_DB)
         c = conn.cursor()
-        
-        # Inbound ayarlarını çek
         c.execute("SELECT id, settings FROM inbounds")
         inbounds = c.fetchall()
-        
-        # Canlı trafik verilerini çek
         c.execute("SELECT email, up, down, inbound_id, last_online FROM client_traffics")
+        
         traffic_dict = {}
         for row in c.fetchall():
             traffic_dict[row['email']] = {
@@ -239,12 +207,10 @@ def get_xui_users():
             }
         conn.close()
         
-        # Admin paneli ek ayarlarını çek
-        admin_conn = sqlite3.connect(PANEL_DB)
-        admin_conn.row_factory = sqlite3.Row
-        admin_c = admin_conn.cursor()
-        admin_c.execute("SELECT * FROM user_settings")
-        settings_dict = {row['email']: dict(row) for row in admin_c.fetchall()}
+        admin_conn = get_db_connection(PANEL_DB)
+        ac = admin_conn.cursor()
+        ac.execute("SELECT * FROM user_settings")
+        settings_dict = {row['email']: dict(row) for row in ac.fetchall()}
         admin_conn.close()
         
         current_time_ms = int(time.time() * 1000)
@@ -256,195 +222,91 @@ def get_xui_users():
             
             for client in clients:
                 email = client.get('email', '')
-                if not email or len(email) != 4: 
-                    continue
+                if not email: continue
                 
-                # Trafik Hesaplama
-                traffic = traffic_dict.get(email, {'up': 0, 'down': 0, 'inbound_id': inbound['id'], 'last_online': 0})
-                upload_gb = traffic['up'] / (1024**3)
-                download_gb = traffic['down'] / (1024**3)
-                kullanilan_kota = upload_gb + download_gb
-                
-                # Toplam Geçmiş Kullanım
-                user_settings = settings_dict.get(email, {})
-                total_usage_ever = user_settings.get('total_usage_ever', 0) or 0
-                toplam_kullanim = total_usage_ever + kullanilan_kota
-                
-                # Kota Limiti ve Paket Tipi Belirleme (DETAYLI)
+                tr = traffic_dict.get(email, {'up': 0, 'down': 0, 'inbound_id': inbound['id'], 'last_online': 0})
+                used = (tr['up'] + tr['down']) / (1024**3)
                 total = client.get('totalGB', 0)
+                
+                # Paket Tipi
                 kota_limit = total / (1024**3) if total > 0 else 0
+                if kota_limit == 0: paket_tipi = "Sınırsız"
+                elif kota_limit >= 100: paket_tipi = "Gold"
+                elif kota_limit >= 50: paket_tipi = "Silver"
+                else: paket_tipi = "Bronze"
                 
-                paket_tipi = "Bilinmiyor"
-                if kota_limit == 0:
-                    paket_tipi = "Sınırsız"
-                elif kota_limit >= 1000:
-                    paket_tipi = "Platin"
-                elif kota_limit >= 100:
-                    paket_tipi = "Gold"
-                elif kota_limit >= 50:
-                    paket_tipi = "Silver"
-                else:
-                    paket_tipi = "Bronze"
-                
-                # Tarih İşlemleri
                 expiry = client.get('expiryTime', 0)
-                bitis_tarihi = "Süresiz"
-                expiry_date_only = ""
-                is_expired = False
-                quota_days = None
+                bitis_tarihi = datetime.fromtimestamp(expiry/1000).strftime('%Y-%m-%d') if expiry > 0 else "Süresiz"
+                is_expired = expiry > 0 and expiry < current_time_ms
                 
-                if expiry > 0:
-                    bitis_tarihi = datetime.fromtimestamp(expiry/1000).strftime('%Y-%m-%d %H:%M:%S')
-                    expiry_date_only = datetime.fromtimestamp(expiry/1000).strftime('%Y-%m-%d')
-                    is_expired = expiry < current_time_ms
-                    try:
-                        days_diff = (expiry - current_time_ms) / 1000 / 86400
-                        quota_days = max(0, int(days_diff))
-                    except:
-                        quota_days = None
-                
-                # Online Durumu ve Süresi (DETAYLI HESAPLAMA)
                 last_online = traffic.get('last_online', 0)
-                online_status = "never"
-                son_gorunme_kisa = "Yok"
-                
+                online_status = "never"; son_gorunme_kisa = "Yok"
                 if last_online > 0:
-                    time_diff_minutes = (current_time_ms - last_online) / 1000 / 60
-                    
-                    if time_diff_minutes <= 1: 
-                        online_status = "online"
-                        son_gorunme_kisa = "Aktif"
-                    elif time_diff_minutes <= 60: 
-                        online_status = "idle"
-                        son_gorunme_kisa = f"{int(time_diff_minutes)} dk"
-                    elif time_diff_minutes <= 1440: # 24 saat
-                        hours = int(time_diff_minutes / 60)
-                        online_status = "offline"
-                        son_gorunme_kisa = f"{hours} saat"
-                    else: 
-                        days = int(time_diff_minutes / 1440)
-                        online_status = "offline"
-                        son_gorunme_kisa = f"{days} gün"
+                    diff_mins = (current_time_ms - last_online) / 60000
+                    if diff_mins <= 2: online_status = "online"; son_gorunme_kisa = "Aktif"
+                    elif diff_mins <= 60: online_status = "idle"; son_gorunme_kisa = f"{int(diff_mins)} dk"
+                    elif diff_mins <= 1440: online_status = "offline"; son_gorunme_kisa = f"{int(diff_mins/60)} sa"
+                    else: online_status = "offline"; son_gorunme_kisa = f"{int(diff_mins/1440)} gn"
                 
-                # Ödeme Durumu Hesaplama
-                next_payment = user_settings.get('next_payment_date', '') or expiry_date_only
-                payment_status = "none"
-                days_until_payment = None
-                
-                if next_payment:
+                user_settings = settings_dict.get(email, {})
+                next_payment = user_settings.get('next_payment_date', '') or bitis_tarihi
+                payment_status = "ok"
+                days_until = None
+                if next_payment and next_payment != "Süresiz":
                     try:
-                        next_date = datetime.strptime(next_payment, '%Y-%m-%d')
-                        today = datetime.now()
-                        # Sadece gün farkını almak için saatleri sıfırla
-                        next_date = next_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                        today = today.replace(hour=0, minute=0, second=0, microsecond=0)
-                        
-                        days_diff = (next_date - today).days
-                        days_until_payment = days_diff
-                        
-                        if days_diff < 0: 
-                            payment_status = "overdue" # Gecikmiş
-                        elif days_diff <= 3: 
-                            payment_status = "urgent"  # Çok Acil
-                        elif days_diff <= 7: 
-                            payment_status = "warning" # Yaklaşıyor
-                        else: 
-                            payment_status = "ok"
-                    except: 
-                        pass
+                        nd = datetime.strptime(next_payment, '%Y-%m-%d')
+                        delta = (nd - datetime.now()).days
+                        days_until = delta
+                        if delta < 0: payment_status = "overdue"
+                        elif delta <= 3: payment_status = "urgent"
+                        elif delta <= 7: payment_status = "warning"
+                    except: pass
                 
-                folder = user_settings.get('folder', 'Tümü')
+                quota_days = int((expiry - current_time_ms)/86400000) if expiry > 0 else None
                 
-                # Listeye Ekle
                 users.append({
                     'id': client.get('id'),
-                    'kullanici_adi': email,
                     'email': email,
+                    'kullanici_adi': email,
                     'paket_tipi': paket_tipi,
                     'sunucu_adi': SERVER_NAME,
                     'kota_limit_gb': round(kota_limit, 2) if kota_limit > 0 else "Sınırsız",
-                    'kullanilan_kota_gb': round(kullanilan_kota, 2),
-                    'toplam_kullanim_gb': round(toplam_kullanim, 2),
-                    'durum': 'aktif' if client.get('enable') == True else 'pasif',
+                    'kullanilan_kota_gb': round(used, 2),
+                    'toplam_kullanim_gb': round((user_settings.get('total_usage_ever',0) + used), 2),
+                    'durum': 'aktif' if client.get('enable') else 'pasif',
                     'bitis_tarihi': bitis_tarihi,
                     'is_expired': is_expired,
-                    'inbound_id': inbound['id'],
                     'online_status': online_status,
                     'son_gorunme_kisa': son_gorunme_kisa,
-                    'monthly_price': user_settings.get('monthly_price', 0),
-                    'last_payment_date': user_settings.get('last_payment_date', ''),
-                    'next_payment_date': next_payment,
-                    'notes': user_settings.get('notes', ''),
                     'payment_status': payment_status,
-                    'days_until_payment': days_until_payment,
-                    'expiry_date_only': expiry_date_only,
+                    'days_until_payment': days_until,
                     'quota_days': quota_days,
-                    'quota_reset_date': user_settings.get('quota_reset_date', ''),
-                    'folder': folder
+                    'folder': user_settings.get('folder', 'Tümü'),
+                    'monthly_price': user_settings.get('monthly_price', 0),
+                    'notes': user_settings.get('notes', '')
                 })
         return users
     except Exception as e:
-        print(f"Kullanıcı listesi hatası: {e}")
+        print(f"Liste Hatası: {e}")
         return []
-
-# --- API ENDPOINTS ---
-
-@app.route('/')
-def index():
-    return send_from_directory('.', 'index.html')
-
-@app.route('/api/login', methods=['POST'])
-def login():
-    data = request.json
-    conn = sqlite3.connect(PANEL_DB)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute("SELECT * FROM admin_users WHERE username = ?", (data.get('username'),))
-    user = c.fetchone()
-    conn.close()
-    if user and bcrypt.checkpw(data.get('password').encode('utf-8'), user['password_hash']):
-        session['user_id'] = user['id']
-        session['username'] = user['username']
-        session.permanent = True
-        return jsonify({'success': True})
-    return jsonify({'success': False, 'message': 'Hatalı giriş!'}), 401
-
-@app.route('/api/logout', methods=['POST'])
-def logout():
-    session.clear()
-    return jsonify({'success': True})
-
-@app.route('/api/check-auth')
-def check_auth():
-    if 'user_id' in session:
-        return jsonify({'authenticated': True, 'username': session.get('username')})
-    return jsonify({'authenticated': False}), 401
 
 @app.route('/api/stats')
 def get_stats():
-    if 'user_id' not in session: 
-        return jsonify({'error': 'Unauthorized'}), 401
+    if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
     users = get_xui_users()
-    
-    overdue_count = sum(1 for u in users if u.get('payment_status') == 'overdue')
-    total_usage = sum(u['toplam_kullanim_gb'] for u in users)
-    
     return jsonify({
         'total_users': len(users),
         'active_users': sum(1 for u in users if u['durum'] == 'aktif'),
-        'passive_users': len(users) - sum(1 for u in users if u['durum'] == 'aktif'),
-        'online_users': sum(1 for u in users if u['online_status'] == 'online'),
-        'total_usage_gb': round(total_usage, 2),
-        'overdue_count': overdue_count
+        'total_usage_gb': round(sum(u['toplam_kullanim_gb'] for u in users), 2),
+        'overdue_count': sum(1 for u in users if u.get('payment_status') == 'overdue')
     })
 
 @app.route('/api/users')
 def get_users_route():
-    if 'user_id' not in session: 
-        return jsonify({'error': 'Unauthorized'}), 401
+    if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
     return jsonify(get_xui_users())
 
-# --- KRİTİK GÜNCELLEME İŞLEMİ (STOP -> UPDATE -> START) ---
+# --- GÜNCELLEME (STOP -> UPDATE -> START) ---
 @app.route('/api/update-user-settings', methods=['POST'])
 def update_user_settings():
     if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
@@ -452,110 +314,82 @@ def update_user_settings():
         data = request.json
         email = data.get('email')
         
-        # 1. Admin Paneli DB Güncelle
-        conn = sqlite3.connect(PANEL_DB)
+        conn = get_db_connection(PANEL_DB)
         c = conn.cursor()
         expiry_or_payment = data.get('expiry_date') or data.get('next_payment_date')
-        folder = data.get('folder', 'Tümü')
-        quota_reset_date = datetime.now().strftime('%Y-%m-%d') if data.get('quota') is not None else None
+        quota_reset = datetime.now().strftime('%Y-%m-%d') if data.get('quota') is not None else None
         
         c.execute("SELECT * FROM user_settings WHERE email = ?", (email,))
         if c.fetchone():
-            if quota_reset_date:
-                c.execute("UPDATE user_settings SET monthly_price=?, next_payment_date=?, notes=?, folder=?, quota_reset_date=?, updated_at=CURRENT_TIMESTAMP WHERE email=?", (data.get('monthly_price',0), expiry_or_payment, data.get('notes',''), folder, quota_reset_date, email))
-            else:
-                c.execute("UPDATE user_settings SET monthly_price=?, next_payment_date=?, notes=?, folder=?, updated_at=CURRENT_TIMESTAMP WHERE email=?", (data.get('monthly_price',0), expiry_or_payment, data.get('notes',''), folder, email))
+            if quota_reset: c.execute("UPDATE user_settings SET monthly_price=?, next_payment_date=?, notes=?, folder=?, quota_reset_date=?, updated_at=CURRENT_TIMESTAMP WHERE email=?", (data.get('monthly_price',0), expiry_or_payment, data.get('notes',''), data.get('folder','Tümü'), quota_reset, email))
+            else: c.execute("UPDATE user_settings SET monthly_price=?, next_payment_date=?, notes=?, folder=?, updated_at=CURRENT_TIMESTAMP WHERE email=?", (data.get('monthly_price',0), expiry_or_payment, data.get('notes',''), data.get('folder','Tümü'), email))
         else:
-            c.execute("INSERT INTO user_settings (email, monthly_price, notes, folder) VALUES (?,?,?,?)", (email, 0, '', folder))
+            c.execute("INSERT INTO user_settings (email, monthly_price, notes, folder) VALUES (?,?,?,?)", (email, 0, '', data.get('folder','Tümü')))
         conn.commit()
         conn.close()
 
-        # 2. X-UI GÜNCELLEME (Stop-Start Mantığı)
-        # Eğer Kota veya Süre değiştiyse servisi durdurup güncelleme yapacağız
+        # X-UI Güncelleme
         if data.get('quota') is not None or data.get('expiry_date'):
-            
-            print(f"🛑 [UPDATE] {email} ayarları için X-UI durduruluyor...")
+            print(f"🛑 [UPDATE] {email} için X-UI Durduruluyor...")
             os.system("systemctl stop x-ui")
-            time.sleep(1)
+            time.sleep(1.5) # Güvenli bekleme
             
             try:
-                xui_conn = sqlite3.connect(XUI_DB)
-                xui_c = xui_conn.cursor()
-                xui_c.execute("SELECT id, settings FROM inbounds")
-                inbounds = xui_c.fetchall()
+                x_conn = get_db_connection(XUI_DB)
+                xc = x_conn.cursor()
+                xc.execute("SELECT id, settings FROM inbounds")
+                inbounds = xc.fetchall()
                 
-                reset_quota_flag = False
-                new_expiry_ms = None
-                
+                reset_traffic = False
+                new_ms = None
                 if data.get('expiry_date'):
-                    try:
-                        dt = datetime.strptime(data.get('expiry_date'), '%Y-%m-%d')
-                        dt = dt.replace(hour=23, minute=59, second=59)
-                        new_expiry_ms = int(dt.timestamp() * 1000)
-                    except: pass
+                    new_ms = int(datetime.strptime(data.get('expiry_date'), '%Y-%m-%d').replace(hour=23, minute=59).timestamp() * 1000)
 
                 for row in inbounds:
-                    inbound_id = row[0]
                     settings = json.loads(row[1])
                     clients = settings.get('clients', [])
                     mod = False
-                    
-                    for client in clients:
-                        if client.get('email') == email:
-                            # a) Kullanıcıyı ZORLA AKTİF ET
-                            client['enable'] = True
+                    for cl in clients:
+                        if cl.get('email') == email:
+                            cl['enable'] = True # ZORLA AÇ
                             mod = True
-                            
-                            # b) KOTA GÜNCELLE
                             if data.get('quota') is not None:
-                                quota_gb = float(data.get('quota'))
-                                client['totalGB'] = 0 if quota_gb == 0 else int(quota_gb * 1024**3)
-                                reset_quota_flag = True
-                            
-                            # c) SÜRE GÜNCELLE
-                            if new_expiry_ms:
-                                client['expiryTime'] = new_expiry_ms
+                                q_gb = float(data.get('quota'))
+                                cl['totalGB'] = 0 if q_gb == 0 else int(q_gb * 1024**3)
+                                reset_traffic = True
+                            if new_ms: cl['expiryTime'] = new_ms
                             break
-                    
-                    if mod:
-                        xui_c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (json.dumps(settings), inbound_id))
+                    if mod: xc.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (json.dumps(settings), row[0]))
                 
-                # d) Trafiği veritabanında da sıfırla (Client Traffics Tablosu)
-                if reset_quota_flag:
-                     xui_c.execute("UPDATE client_traffics SET up = 0, down = 0 WHERE email = ?", (email,))
-                     if new_expiry_ms:
-                         try: xui_c.execute("UPDATE client_traffics SET expiry_time = ? WHERE email = ?", (new_expiry_ms, email))
-                         except: pass
+                if reset_traffic:
+                    xc.execute("UPDATE client_traffics SET up=0, down=0 WHERE email=?", (email,))
+                    if new_ms: 
+                        try: xc.execute("UPDATE client_traffics SET expiry_time=? WHERE email=?", (new_ms, email))
+                        except: pass
                 
-                xui_conn.commit()
-                xui_conn.close()
+                x_conn.commit()
+                x_conn.close()
+                if reset_traffic: reset_user_quota_log_only(email)
                 
-                # Admin paneli logla
-                if reset_quota_flag: reset_user_quota_log_only(email)
-
-            except Exception as e:
-                print(f"❌ X-UI DB Update hatası: {e}")
+            except Exception as e: print(f"XUI Error: {e}")
             
-            print(f"🚀 [UPDATE] {email} ayarları tamam, X-UI başlatılıyor...")
+            print("🚀 [UPDATE] X-UI Başlatılıyor...")
             os.system("systemctl start x-ui")
 
-        return jsonify({'success': True, 'message': 'Ayarlar güncellendi ve servis yeniden başlatıldı!'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': True})
+    except Exception as e: return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/toggle-user', methods=['POST'])
 def toggle_user():
     if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
     try:
-        data = request.json
-        user_email = data.get('email')
-        new_enable = data.get('enable')
+        data = request.json; email = data.get('email'); enable = data.get('enable')
         
-        print(f"🛑 [TOGGLE] İşlem için X-UI durduruluyor: {user_email}")
+        print(f"🛑 [TOGGLE] X-UI Durduruluyor...")
         os.system("systemctl stop x-ui")
-        time.sleep(1)
+        time.sleep(1.5)
         
-        conn = sqlite3.connect(XUI_DB)
+        conn = get_db_connection(XUI_DB)
         c = conn.cursor()
         c.execute("SELECT id, settings FROM inbounds")
         inbounds = c.fetchall()
@@ -563,179 +397,101 @@ def toggle_user():
             settings = json.loads(row[1])
             clients = settings.get('clients', [])
             mod = False
-            for client in clients:
-                if client.get('email') == user_email:
-                    client['enable'] = new_enable
+            for cl in clients:
+                if cl.get('email') == email:
+                    cl['enable'] = enable
                     mod = True
                     break
-            if mod:
-                c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (json.dumps(settings), row[0]))
+            if mod: c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (json.dumps(settings), row[0]))
         conn.commit()
         conn.close()
         
-        print("🚀 [TOGGLE] İşlem tamam, X-UI başlatılıyor...")
+        print("🚀 [TOGGLE] X-UI Başlatılıyor...")
         os.system("systemctl start x-ui")
         return jsonify({'success': True})
-    except Exception as e: return jsonify({'success': False, 'message': str(e)}), 500
+    except Exception as e: return jsonify({'success': False}), 500
 
 @app.route('/api/add-payment', methods=['POST'])
 def add_payment():
     if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
     try:
-        data = request.json
-        email = data.get('email')
-        amount = data.get('amount')
-        payment_date = data.get('payment_date')
+        data = request.json; email = data.get('email')
+        conn = get_db_connection(PANEL_DB); c = conn.cursor()
+        c.execute("INSERT INTO payment_history (email, amount, payment_date, payment_method, notes) VALUES (?,?,?,?,?)", (email, data.get('amount'), data.get('payment_date'), data.get('payment_method',''), data.get('notes','')))
         
-        conn = sqlite3.connect(PANEL_DB)
-        c = conn.cursor()
-        c.execute("INSERT INTO payment_history (email, amount, payment_date, payment_method, notes) VALUES (?,?,?,?,?)", (email, amount, payment_date, data.get('payment_method',''), data.get('notes','')))
+        try: next_p = (datetime.strptime(data.get('payment_date'), '%Y-%m-%d') + timedelta(days=30)).strftime('%Y-%m-%d')
+        except: next_p = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
         
-        # Sonraki ödeme tarihi tahmini
-        try:
-            pd = datetime.strptime(payment_date, '%Y-%m-%d')
-            next_payment = (pd + timedelta(days=30)).strftime('%Y-%m-%d')
-        except:
-             next_payment = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+        c.execute("UPDATE user_settings SET last_payment_date=?, next_payment_date=?, quota_reset_date=?, updated_at=CURRENT_TIMESTAMP WHERE email=?", (data.get('payment_date'), next_p, data.get('payment_date'), email))
+        conn.commit(); conn.close()
 
-        c.execute("UPDATE user_settings SET last_payment_date=?, next_payment_date=?, quota_reset_date=?, updated_at=CURRENT_TIMESTAMP WHERE email=?", (payment_date, next_payment, payment_date, email))
-        conn.commit()
-        conn.close()
-
-        # Ödeme alındıysa süre uzat ve trafiği sıfırla -> STOP -> START
-        print(f"🛑 [ÖDEME] İşlem için X-UI durduruluyor: {email}")
+        # Stop -> Update -> Start
+        print(f"🛑 [ÖDEME] X-UI Durduruluyor...")
         os.system("systemctl stop x-ui")
-        time.sleep(1)
-
+        time.sleep(1.5)
+        
         try:
-            expiry_dt = datetime.strptime(next_payment, '%Y-%m-%d')
-            expiry_dt = expiry_dt.replace(hour=23, minute=59, second=59)
-            new_expiry_ms = int(expiry_dt.timestamp() * 1000)
-
-            xui_conn = sqlite3.connect(XUI_DB)
-            xui_c = xui_conn.cursor()
-            
-            # Client Traffics tablosunu güncelle
-            xui_c.execute("UPDATE client_traffics SET up = 0, down = 0, expiry_time = ? WHERE email = ?", (new_expiry_ms, email))
-            
-            # Inbounds JSON güncelle
-            xui_c.execute("SELECT id, settings FROM inbounds")
-            for row in xui_c.fetchall():
-                inbound_id = row[0]
-                settings = json.loads(row[1])
-                clients = settings.get('clients', [])
+            new_ms = int(datetime.strptime(next_p, '%Y-%m-%d').replace(hour=23, minute=59).timestamp() * 1000)
+            x_conn = get_db_connection(XUI_DB); xc = x_conn.cursor()
+            xc.execute("UPDATE client_traffics SET up=0, down=0, expiry_time=? WHERE email=?", (new_ms, email))
+            xc.execute("SELECT id, settings FROM inbounds")
+            for row in xc.fetchall():
+                sets = json.loads(row[1])
                 mod = False
-                for client in clients:
-                    if client.get('email') == email:
-                        client['expiryTime'] = new_expiry_ms
-                        client['enable'] = True
-                        mod = True
+                for cl in sets.get('clients', []):
+                    if cl.get('email') == email:
+                        cl['enable'] = True; cl['expiryTime'] = new_ms; mod = True
                         break
-                if mod:
-                    xui_c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (json.dumps(settings), inbound_id))
-            xui_conn.commit()
-            xui_conn.close()
+                if mod: xc.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (json.dumps(sets), row[0]))
+            x_conn.commit(); x_conn.close()
             reset_user_quota_log_only(email)
-            
-        except Exception as e:
-            print(f"❌ Ödeme XUI update hatası: {e}")
-
-        print("🚀 [ÖDEME] İşlem tamam, X-UI başlatılıyor...")
+        except: pass
+        
+        print("🚀 [ÖDEME] X-UI Başlatılıyor...")
         os.system("systemctl start x-ui")
-        return jsonify({'success': True, 'message': 'Ödeme alındı, kullanıcı açıldı!'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': True})
+    except Exception as e: return jsonify({'success': False}), 500
 
 @app.route('/api/payment-history/<email>')
-def get_payment_history(email):
+def get_history(email):
     if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
-    try:
-        conn = sqlite3.connect(PANEL_DB)
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute("SELECT * FROM payment_history WHERE email = ? ORDER BY payment_date DESC", (email,))
-        history = [dict(row) for row in c.fetchall()]
-        conn.close()
-        return jsonify(history)
-    except Exception as e: return jsonify({'error': str(e)}), 500
+    conn = get_db_connection(PANEL_DB); c = conn.cursor()
+    c.execute("SELECT * FROM payment_history WHERE email=? ORDER BY payment_date DESC", (email,))
+    res = [dict(row) for row in c.fetchall()]; conn.close()
+    return jsonify(res)
 
 @app.route('/api/notifications')
-def get_notifications():
+def get_notifs():
     if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
-    users = get_xui_users()
-    notifications = []
-    
-    for user in users:
-        # Ödeme Bildirimleri
-        if user.get('payment_status') == 'overdue': 
-            notifications.append({'type': 'payment_overdue', 'user': user['kullanici_adi'], 'message': f"Ödeme {abs(user['days_until_payment'])} gün gecikti!", 'priority': 'high'})
-        elif user.get('payment_status') == 'urgent': 
-            notifications.append({'type': 'payment_urgent', 'user': user['kullanici_adi'], 'message': f"{user['days_until_payment']} gün içinde ödeme", 'priority': 'medium'})
-        elif user.get('payment_status') == 'warning': 
-            notifications.append({'type': 'payment_warning', 'user': user['kullanici_adi'], 'message': f"{user['days_until_payment']} gün içinde ödeme", 'priority': 'low'})
-        
-        # Kota Bildirimleri
-        if user['kota_limit_gb'] != "Sınırsız":
-            try:
-                usage_percent = (user['kullanilan_kota_gb'] / float(user['kota_limit_gb'])) * 100
-                if usage_percent >= 90: 
-                    notifications.append({'type': 'quota_high', 'user': user['kullanici_adi'], 'message': f"Kota %{int(usage_percent)} doldu", 'priority': 'medium'})
-            except: pass
-            
-        # Süre Bildirimleri
-        if user.get('quota_days') is not None and user['quota_days'] <= 3: 
-            notifications.append({'type': 'quota_reset_soon', 'user': user['kullanici_adi'], 'message': f"Süre {user['quota_days']} gün kaldı", 'priority': 'low'})
-        
-        if user.get('is_expired'): 
-            notifications.append({'type': 'expired', 'user': user['kullanici_adi'], 'message': "Kullanım süresi dolmuş!", 'priority': 'high'})
-            
-    return jsonify(notifications)
+    users = get_xui_users(); notifs = []
+    for u in users:
+        if u['payment_status'] == 'overdue': notifs.append({'type':'payment_overdue', 'user':u['kullanici_adi'], 'message':f"Ödeme gecikti!", 'priority':'high'})
+        if u['is_expired']: notifs.append({'type':'expired', 'user':u['kullanici_adi'], 'message':"Süre doldu!", 'priority':'high'})
+    return jsonify(notifs)
 
 @app.route('/api/update-user-note', methods=['POST'])
-def update_user_note():
+def update_note():
     if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
-    try:
-        data = request.json
-        email = data.get('email')
-        note = data.get('note', '')
-        conn = sqlite3.connect(PANEL_DB)
-        c = conn.cursor()
-        c.execute("SELECT * FROM user_settings WHERE email = ?", (email,))
-        if c.fetchone(): c.execute("UPDATE user_settings SET notes = ?, updated_at = CURRENT_TIMESTAMP WHERE email = ?", (note, email))
-        else: c.execute("INSERT INTO user_settings (email, notes) VALUES (?, ?)", (email, note))
-        conn.commit()
-        conn.close()
-        return jsonify({'success': True})
-    except Exception as e: return jsonify({'success': False}), 500
+    d = request.json; conn = get_db_connection(PANEL_DB); c = conn.cursor()
+    c.execute("SELECT id FROM user_settings WHERE email=?", (d.get('email'),))
+    if c.fetchone(): c.execute("UPDATE user_settings SET notes=? WHERE email=?", (d.get('note'), d.get('email')))
+    else: c.execute("INSERT INTO user_settings (email, notes) VALUES (?,?)", (d.get('email'), d.get('note')))
+    conn.commit(); conn.close()
+    return jsonify({'success': True})
 
 @app.route('/api/move-to-folder', methods=['POST'])
-def move_to_folder():
+def move_folder():
     if 'user_id' not in session: return jsonify({'error': 'Unauthorized'}), 401
-    try:
-        data = request.json
-        email = data.get('email')
-        new_folder = data.get('folder')
-        
-        # Klasör listesini buraya ekledim, istersen genişletebilirsin
-        valid_folders = ['Tümü', 'Superbox', 'AX', 'GSM', 'ÖZEL', 'KLASÖR-1', 'KLASÖR-2', 'KLASÖR-3', 'KLASÖR-4']
-        
-        if new_folder not in valid_folders: return jsonify({'success': False, 'message': 'Geçersiz klasör'}), 400
-        
-        conn = sqlite3.connect(PANEL_DB)
-        c = conn.cursor()
-        c.execute("SELECT email FROM user_settings WHERE email = ?", (email,))
-        if c.fetchone(): c.execute("UPDATE user_settings SET folder = ?, updated_at = CURRENT_TIMESTAMP WHERE email = ?", (new_folder, email))
-        else: c.execute("INSERT INTO user_settings (email, folder, monthly_price, notes) VALUES (?, ?, 0, '')", (email, new_folder))
-        conn.commit()
-        conn.close()
-        return jsonify({'success': True})
-    except Exception as e: return jsonify({'success': False}), 500
+    d = request.json; conn = get_db_connection(PANEL_DB); c = conn.cursor()
+    c.execute("SELECT id FROM user_settings WHERE email=?", (d.get('email'),))
+    if c.fetchone(): c.execute("UPDATE user_settings SET folder=? WHERE email=?", (d.get('folder'), d.get('email')))
+    else: c.execute("INSERT INTO user_settings (email, folder) VALUES (?,?)", (d.get('email'), d.get('folder')))
+    conn.commit(); conn.close()
+    return jsonify({'success': True})
 
 if __name__ == '__main__':
     init_db()
-    # Arka plan işlemlerini başlat
     t = threading.Thread(target=monitor_loop)
     t.daemon = True
     t.start()
-    
     app.run(host='0.0.0.0', port=8888, debug=False)
