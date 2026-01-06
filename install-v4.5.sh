@@ -14,8 +14,9 @@ cat << "EOF"
 ╔══════════════════════════════════════════════════════════════╗
 ║   🚀 NovaCell-3 v4.7 - KURULUM (FİNAL)                       ║
 ║   ✅ Kullanıcı: novacell / NovaCell25Hakki                   ║
-║   🔄 3x-ui expiryTime bazlı gün gösterimi                    ║
-║   ⏰ Kota/Süre dolunca otomatik pasif (30 saniye)            ║
+║   🔄 Ödeme alınca kota sıfırlanmaz                           ║
+║   ⏰ Otomatik kota yenileme (cron job)                       ║
+║   📅 quota_start_date sistemi (sabit gün)                    ║
 ║   📱 Telegram günlük yedekleme (opsiyonel)                   ║
 ║   🎨 Özelleştirilebilir panel ismi (ZORLAMALI MOD)           ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -27,7 +28,7 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-echo -e "${GREEN}[1/13] TEMİZLİK...${NC}"
+echo -e "${GREEN}[1/15] TEMİZLİK...${NC}"
 systemctl stop xui-admin-panel 2>/dev/null || true
 systemctl disable xui-admin-panel 2>/dev/null || true
 rm -rf /opt/xui-admin-panel/app.py /opt/xui-admin-panel/index.html
@@ -35,10 +36,10 @@ rm -f /etc/systemd/system/xui-admin-panel.service
 rm -f /usr/local/bin/reset-quota.sh
 rm -f /usr/local/bin/check-individual-quotas.sh
 rm -f /root/novacell-telegram-backup.sh
-crontab -l 2>/dev/null | grep -v -E "reset-quota|novacell|check-individual-quotas" | crontab - 2>/dev/null || true
+crontab -l 2>/dev/null | grep -v -E "reset-quota|novacell|check-individual-quotas|reset_quotas_daily" | crontab - 2>/dev/null || true
 systemctl daemon-reload
 
-echo -e "${GREEN}[2/13] PAKETLER...${NC}"
+echo -e "${GREEN}[2/15] PAKETLER...${NC}"
 apt update -qq
 apt install -y python3 python3-pip python3-venv sqlite3 curl bc >/dev/null 2>&1
 
@@ -52,29 +53,33 @@ if [ -f "$INSTALL_DIR/admin_panel.db" ]; then
         echo -e "${YELLOW}🔧 folder sütunu ekleniyor...${NC}"
         sqlite3 "$INSTALL_DIR/admin_panel.db" "ALTER TABLE user_settings ADD COLUMN folder TEXT DEFAULT 'Tümü';"
     }
+    sqlite3 "$INSTALL_DIR/admin_panel.db" "PRAGMA table_info(user_settings);" | grep -q "quota_start_date" || {
+        echo -e "${YELLOW}🔧 quota_start_date sütunu ekleniyor...${NC}"
+        sqlite3 "$INSTALL_DIR/admin_panel.db" "ALTER TABLE user_settings ADD COLUMN quota_start_date TEXT DEFAULT NULL;"
+    }
 else
     echo -e "${YELLOW}🆕 Yeni kurulum${NC}"
 fi
 
-echo -e "${GREEN}[3/13] PYTHON ORTAMI...${NC}"
+echo -e "${GREEN}[3/15] PYTHON ORTAMI...${NC}"
 python3 -m venv venv
 source venv/bin/activate
 pip install --quiet --upgrade pip
 pip install --quiet flask flask-cors bcrypt
 
-echo -e "${GREEN}[4/13] BACKEND DOSYASI...${NC}"
+echo -e "${GREEN}[4/15] BACKEND DOSYASI...${NC}"
 curl -sL https://raw.githubusercontent.com/eren73546/novacell-admin-panel/main/app.py -o app.py || {
     echo -e "${RED}❌ Backend indirilemedi!${NC}"
     exit 1
 }
 
-echo -e "${GREEN}[5/13] FRONTEND DOSYASI...${NC}"
+echo -e "${GREEN}[5/15] FRONTEND DOSYASI...${NC}"
 curl -sL https://raw.githubusercontent.com/eren73546/novacell-admin-panel/main/index.html -o index.html || {
     echo -e "${RED}❌ Frontend indirilemedi!${NC}"
     exit 1
 }
 
-echo -e "${GREEN}[6/13] PANEL AYARLARI...${NC}"
+echo -e "${GREEN}[6/15] PANEL AYARLARI...${NC}"
 echo ""
 echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
 echo -e "${YELLOW}📋 PANEL İSMİ ÖZELLEŞTİRME${NC}"
@@ -82,16 +87,12 @@ echo -e "${BLUE}═════════════════════�
 echo ""
 echo -e "${YELLOW}Panel başlığını özelleştirmek ister misiniz?${NC}"
 echo ""
-read -p "Panel ismi girin (boş bırakırsanız 'NovaCell-3 v4.5'): " PANEL_NAME
-PANEL_NAME=${PANEL_NAME:-NovaCell-3 v4.5}
+read -p "Panel ismi girin (boş bırakırsanız 'NovaCell-3 v4.7'): " PANEL_NAME
+PANEL_NAME=${PANEL_NAME:-NovaCell-3 v4.7}
 
 echo -e "${GREEN}✅ Seçilen İsim: $PANEL_NAME${NC}"
 echo -e "${YELLOW}⚙️  Dosya içerikleri güncelleniyor...${NC}"
 
-# ==============================================================================
-# KRİTİK DÜZELTME: PYTHON İLE DOĞRUDAN METİN DEĞİŞTİRME
-# GitHub'dan inen dosyadaki sabit isimleri bulup zorla değiştiriyoruz.
-# ==============================================================================
 python3 -c "
 import sys
 
@@ -102,14 +103,9 @@ try:
     with open('app.py', 'r', encoding='utf-8') as f:
         kod = f.read()
     
-    # Sabit yazılı ismi bul ve değiştir
-    # 'sunucu_adi': 'NovaCell-3' -> 'sunucu_adi': 'GirdiginizIsim'
     kod = kod.replace(\"'sunucu_adi': 'NovaCell-3'\", f\"'sunucu_adi': '{yeni_isim}'\")
-    
-    # Eğer başka yerlerde geçiyorsa onları da değiştir
     kod = kod.replace('\"NovaCell-3\"', f'\"{yeni_isim}\"')
     
-    # SERVER_NAME değişkeni varsa onu da güncelle
     if 'SERVER_NAME =' in kod:
         import re
         kod = re.sub(r'SERVER_NAME = .*', f'SERVER_NAME = \"{yeni_isim}\"', kod)
@@ -125,6 +121,7 @@ try:
     with open('index.html', 'r', encoding='utf-8') as f:
         html = f.read()
     
+    html = html.replace('NovaCell-3 v4.7', yeni_isim)
     html = html.replace('NovaCell-3 v4.5', yeni_isim)
     html = html.replace('NovaCell-3', yeni_isim)
     
@@ -134,15 +131,35 @@ try:
 except Exception as e:
     print(f'❌ index.html düzenleme hatası: {e}')
 "
-# ==============================================================================
 
 echo ""
-echo -e "${GREEN}[7/13] VERITABANI...${NC}"
+echo -e "${GREEN}[7/15] VERITABANI...${NC}"
 cd "$INSTALL_DIR"
 source venv/bin/activate
 python3 -c "from app import init_db; init_db()"
 
-echo -e "${GREEN}[8/13] SERVİS DOSYASI...${NC}"
+echo -e "${GREEN}[8/15] CRON SCRİPTİ...${NC}"
+curl -sL https://raw.githubusercontent.com/eren73546/novacell-admin-panel/main/reset_quotas_daily.py -o /opt/xui-admin-panel/reset_quotas_daily.py || {
+    echo -e "${RED}❌ Cron scripti indirilemedi!${NC}"
+    exit 1
+}
+chmod +x /opt/xui-admin-panel/reset_quotas_daily.py
+echo -e "${GREEN}✅ Cron scripti indirildi${NC}"
+
+echo -e "${GREEN}[9/15] CRONTAB AYARLARI...${NC}"
+CRON_LINE="1 0 * * * root /usr/bin/python3 /opt/xui-admin-panel/reset_quotas_daily.py >> /var/log/quota-reset.log 2>&1"
+
+if ! grep -q "reset_quotas_daily.py" /etc/crontab 2>/dev/null; then
+    echo "$CRON_LINE" >> /etc/crontab
+    echo -e "${GREEN}✅ Crontab'a eklendi (Her gece 00:01)${NC}"
+else
+    echo -e "${YELLOW}ℹ️  Crontab'da zaten mevcut${NC}"
+fi
+
+systemctl restart cron
+echo -e "${GREEN}✅ Cron servisi restart edildi${NC}"
+
+echo -e "${GREEN}[10/15] SERVİS DOSYASI...${NC}"
 cat > /etc/systemd/system/xui-admin-panel.service << EOF
 [Unit]
 Description=$PANEL_NAME Admin Panel
@@ -161,7 +178,7 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-echo -e "${GREEN}[9/13] SERVİS BAŞLATILIYOR...${NC}"
+echo -e "${GREEN}[11/15] SERVİS BAŞLATILIYOR...${NC}"
 systemctl daemon-reload
 systemctl enable xui-admin-panel
 systemctl start xui-admin-panel
@@ -173,7 +190,7 @@ if ! systemctl is-active --quiet xui-admin-panel; then
     exit 1
 fi
 
-echo -e "${GREEN}[10/13] TELEGRAM YEDEKLEME (İSTEĞE BAĞLI)...${NC}"
+echo -e "${GREEN}[12/15] TELEGRAM YEDEKLEME (İSTEĞE BAĞLI)...${NC}"
 echo ""
 echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
 echo -e "${YELLOW}📱 TELEGRAM YEDEKLEME KURULUMU (Opsiyonel)${NC}"
@@ -234,14 +251,14 @@ cp /opt/xui-admin-panel/admin_panel.db "$BACKUP_DIR/admin_panel-$DATE.db" 2>/dev
 
 cd "$BACKUP_DIR"
 if [ -f "x-ui-$DATE.db" ]; then
-    tar -czf "NovaCell-v4.5-$DATE.tar.gz" admin_panel-$DATE.db x-ui-$DATE.db
+    tar -czf "NovaCell-v4.7-$DATE.tar.gz" admin_panel-$DATE.db x-ui-$DATE.db
 else
-    tar -czf "NovaCell-v4.5-$DATE.tar.gz" admin_panel-$DATE.db
+    tar -czf "NovaCell-v4.7-$DATE.tar.gz" admin_panel-$DATE.db
 fi
 
-curl -F document=@"NovaCell-v4.5-$DATE.tar.gz" \
+curl -F document=@"NovaCell-v4.7-$DATE.tar.gz" \
      -F chat_id="$CHAT_ID" \
-     -F caption="📱 NovaCell-3 v4.5 Günlük Yedek — $DATE" \
+     -F caption="📱 NovaCell-3 v4.7 Günlük Yedek — $DATE" \
      "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" >/dev/null 2>&1
 
 find "$BACKUP_DIR" -name "*.tar.gz" -mtime +14 -delete
@@ -253,7 +270,7 @@ BACKUPSCRIPT
     echo -e "${YELLOW}📤 Test mesajı gönderiliyor...${NC}"
     TEST_RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
          -d chat_id="$CHAT_ID" \
-         -d text="✅ $PANEL_NAME kurulumu tamamlandı! Günlük yedekler her gece 04:30'da gönderilecek.")
+         -d text="✅ $PANEL_NAME v4.7 kurulumu tamamlandı! Günlük yedekler her gece 04:30'da gönderilecek.")
     
     if echo "$TEST_RESPONSE" | grep -q '"ok":true'; then
         echo -e "${GREEN}✅ Test mesajı başarıyla gönderildi!${NC}"
@@ -279,7 +296,7 @@ BACKUPSCRIPT
     chmod +x /root/novacell-telegram-backup.sh
 fi
 
-echo -e "${GREEN}[11/13] CRON AYARLARI...${NC}"
+echo -e "${GREEN}[13/15] TELEGRAM CRON AYARLARI...${NC}"
 if [ "$TELEGRAM_ENABLED" = true ]; then
     (crontab -l 2>/dev/null | grep -v "novacell-telegram-backup"; 
     echo "30 4 * * * /root/novacell-telegram-backup.sh") | crontab -
@@ -288,10 +305,10 @@ else
     echo -e "${YELLOW}⚠️  Telegram yedeği cron'a eklenmedi${NC}"
 fi
 
-echo -e "${GREEN}[12/13] SON KONTROL...${NC}"
+echo -e "${GREEN}[14/15] SON KONTROL...${NC}"
 sleep 2
 
-echo -e "${GREEN}[13/13] TAMAMLANDI!${NC}"
+echo -e "${GREEN}[15/15] TAMAMLANDI!${NC}"
 clear
 echo -e "${GREEN}"
 cat << "EOF"
@@ -308,10 +325,11 @@ echo -e "${BLUE}🔑 Şifre: NovaCell25Hakki${NC}"
 echo -e "${BLUE}📋 Panel İsmi: $PANEL_NAME${NC}"
 echo ""
 echo -e "${YELLOW}═══════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}✅ ÖZELLİKLER:${NC}"
-echo -e "   • 3x-ui ile senkron gün gösterimi"
-echo -e "   • Kota/Süre dolunca otomatik pasif (30 saniye)"
-echo -e "   • Email kontrolü: 4 karakter"
+echo -e "${GREEN}✅ YENİ ÖZELLİKLER (v4.7):${NC}"
+echo -e "   • Ödeme alınca kota sıfırlanmaz ✅"
+echo -e "   • quota_start_date sistemi (sabit gün) ✅"
+echo -e "   • Otomatik kota yenileme (her gece 00:01) ✅"
+echo -e "   • Ödeme yapılmamışsa data kesilir ✅"
 echo -e "   • Panel Adı: $PANEL_NAME"
 echo ""
 if [ "$TELEGRAM_ENABLED" = true ]; then
@@ -326,6 +344,8 @@ echo -e "${GREEN}🔧 Yönetim Komutları:${NC}"
 echo -e "   Durum: ${BLUE}systemctl status xui-admin-panel${NC}"
 echo -e "   Log: ${BLUE}journalctl -u xui-admin-panel -f${NC}"
 echo -e "   Yeniden Başlat: ${BLUE}systemctl restart xui-admin-panel${NC}"
+echo -e "   Cron Test: ${BLUE}/usr/bin/python3 /opt/xui-admin-panel/reset_quotas_daily.py${NC}"
+echo -e "   Cron Log: ${BLUE}tail -f /var/log/quota-reset.log${NC}"
 if [ "$TELEGRAM_ENABLED" = true ]; then
     echo -e "   Telegram Test: ${BLUE}bash /root/novacell-telegram-backup.sh${NC}"
 fi
