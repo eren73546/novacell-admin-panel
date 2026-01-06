@@ -806,10 +806,18 @@ def add_payment():
                 quota_start = datetime.strptime(existing_record[0], '%Y-%m-%d')
                 start_day = quota_start.day
                 
-                # Bugünden sonraki ilk quota_start gününü bul
-                today = datetime.now()
-                next_month = today.month + 1
-                next_year = today.year
+                # Ödeme tarihinden sonraki ilk quota_start gününü bul
+                payment_dt = datetime.strptime(payment_date, '%Y-%m-%d')
+                
+                # Eğer ödeme quota_start gününden sonra yapıldıysa
+                if payment_dt.day > start_day:
+                    # Bir sonraki ayın quota_start günü
+                    next_month = payment_dt.month + 1
+                    next_year = payment_dt.year
+                else:
+                    # Aynı ayın quota_start günü henüz gelmedi
+                    next_month = payment_dt.month
+                    next_year = payment_dt.year
                 
                 if next_month > 12:
                     next_month = 1
