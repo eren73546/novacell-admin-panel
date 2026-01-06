@@ -795,46 +795,109 @@ def add_payment():
                      VALUES (?, ?, ?, ?, ?)""",
                   (email, amount, payment_date, payment_method, notes))
         
-        # SADECE last_payment_date güncelle, next_payment_date DEĞİŞTİRME!
+        # quota_start_date'i al
+        c.execute("SELECT quota_start_date FROM user_settings WHERE email = ?", (email,))
+        existing_record = c.fetchone()
+        
+        next_payment = None
+        
+        if existing_record and existing_record[0]:
+            # quota_start_date var, +30 gün ekle
+            try:
+                quota_start = datetime.strptime(existing_record[0], '%Y-%m-%d')
+                start_day = quota_start.day
+                
+                # quota_start_date'ten bir ay sonra
+                next_month = quota_start.month + 1
+                next_year = quota_start.year
+                
+                if next_month > 12:
+                    next_month = 1
+                    next_year += 1
+                
+                # Ayın son günü kontrolü
+                max_day = calendar.monthrange(next_year, next_month)[1]
+                safe_day = min(start_day, max_day)
+                
+                next_payment = datetime(next_year, next_month, safe_day).strftime('%Y-%m-%d')
+            except Exception as e:
+                print(f"next_payment hesaplama hatası: {e}")
+                # Hata varsa +30 gün
+                payment_dt = datetime.strptime(payment_date, '%Y-%m-%d')
+                next_payment = (payment_dt + timedelta(days=30)).strftime('%Y-%m-%d')
+        else:
+            # quota_start_date yok, +30 gün
+            try:
+                payment_dt = datetime.strptime(payment_date, '%Y-%m-%d')
+                next_payment = (payment_dt + timedelta(days=30)).strftime('%Y-%m-%d')
+            except:
+                next_payment = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+        
+        # User settings güncelle
         c.execute("SELECT * FROM user_settings WHERE email = ?", (email,))
         if c.fetchone():
             c.execute("""UPDATE user_settings 
-                         SET last_payment_date = ?, 
+                         SET last_payment_date = ?, next_payment_date = ?, 
                              updated_at = CURRENT_TIMESTAMP
                          WHERE email = ?""",
-                      (payment_date, email))
+                      (payment_date, next_payment, email))
         else:
-            c.execute("""INSERT INTO user_settings (email, last_payment_date)
-                         VALUES (?, ?)""",
-                      (email, payment_date))
+            c.execute("""INSERT INTO user_settings (email, last_payment_date, next_payment_date)
+                         VALUES (?, ?, ?)""",
+                      (email, payment_date, next_payment))
         
         conn.commit()
         conn.close()
         
-        # KOTA SIFIRLANMAZ! (KRITIK DEĞİŞİKLİK)
+        # KOTA SIFIRLANMAZ!
         # reset_user_quota(email)  # ← Bu satır kaldırıldı!
         
-        # Süreyi uzat (sadece enable=1 yap)
-        try:
-            xui_conn = sqlite3.connect(XUI_DB)
-            xui_c = xui_conn.cursor()
-            
-            # CLIENT_TRAFFICS'I GUNCELLE (enable=1, ama kota sıfırlanmaz!)
-            xui_c.execute("""UPDATE client_traffics 
-                             SET enable = 1
-                             WHERE email = ?""", 
-                          (email,))
-            
-            xui_conn.commit()
-            xui_conn.close()
-            
-            print(f"Ödeme sonrası toggle refresh yapılıyor: {email}")
-            toggle_refresh_user(email)
-            
-        except Exception as e:
-            print(f"Ödeme sonrası aktifleştirme hatası: {e}")
+        # Kullanıcıyı aktif et ve süreyi uzat
+        if next_payment:
+            try:
+                expiry_dt = datetime.strptime(next_payment, '%Y-%m-%d')
+                expiry_dt = expiry_dt.replace(hour=23, minute=59, second=59)
+                new_expiry_ms = int(expiry_dt.timestamp() * 1000)
+                
+                sync_xui_expiry(email, new_expiry_ms)
+                
+                xui_conn = sqlite3.connect(XUI_DB)
+                xui_c = xui_conn.cursor()
+                
+                # inbounds JSON'u güncelle
+                xui_c.execute("SELECT id, settings FROM inbounds")
+                for row in xui_c.fetchall():
+                    inbound_id = row[0]
+                    settings = json.loads(row[1])
+                    clients = settings.get('clients', [])
+                    changed = False
+                    for client in clients:
+                        if client.get('email') == email:
+                            client['expiryTime'] = new_expiry_ms
+                            client['enable'] = True
+                            changed = True
+                            break
+                    if changed:
+                        settings['clients'] = clients
+                        new_json = json.dumps(settings, ensure_ascii=False)
+                        xui_c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_json, inbound_id))
+                
+                # CLIENT_TRAFFICS'I GUNCELLE (enable=1, expiry_time güncelle, ama kota sıfırlanmaz!)
+                xui_c.execute("""UPDATE client_traffics 
+                                 SET enable = 1, expiry_time = ?
+                                 WHERE email = ?""", 
+                              (new_expiry_ms, email))
+                
+                xui_conn.commit()
+                xui_conn.close()
+                
+                print(f"Ödeme sonrası toggle refresh yapılıyor: {email}")
+                toggle_refresh_user(email)
+                
+            except Exception as e:
+                print(f"Ödeme sonrası aktifleştirme hatası: {e}")
         
-        return jsonify({'success': True, 'message': 'Ödeme kaydedildi! (Tarihler değişmedi, kota sıfırlanmadı)'})
+        return jsonify({'success': True, 'message': 'Ödeme kaydedildi! (Kullanıcı aktif edildi, kota sıfırlanmadı)'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
