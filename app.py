@@ -62,10 +62,20 @@ def init_db():
     except sqlite3.OperationalError:
         print("Sistem: quota_reset_date sütunu eksik, otomatik ekleniyor...")
         try:
-            c.execute("ALTER TABLE user_settings ADD COLUMN quota_reset_date INTEGER DEFAULT 0")
+            c.execute("ALTER TABLE user_settings ADD COLUMN quota_reset_date TEXT DEFAULT NULL")
             print("Sistem: Sütun başarıyla eklendi.")
         except Exception as e:
             print(f"Sistem: Sütun ekleme hatası: {e}")
+    
+    try:
+        c.execute("SELECT quota_start_date FROM user_settings LIMIT 1")
+    except sqlite3.OperationalError:
+        print("Sistem: quota_start_date sütunu eksik, otomatik ekleniyor...")
+        try:
+            c.execute("ALTER TABLE user_settings ADD COLUMN quota_start_date TEXT DEFAULT NULL")
+            print("Sistem: quota_start_date sütunu eklendi.")
+        except Exception as e:
+            print(f"Sistem: quota_start_date ekleme hatası: {e}")
 
     c.execute("SELECT COUNT(*) FROM admin_users WHERE username = 'novacell'")
     if c.fetchone()[0] == 0:
@@ -413,6 +423,7 @@ def get_xui_users():
                     'expiry_date_only': expiry_date_only,
                     'quota_days': quota_days,
                     'quota_reset_date': user_settings.get('quota_reset_date', ''),
+                    'quota_start_date': user_settings.get('quota_start_date', ''),
                     'folder': folder
                 })
         return users
@@ -577,20 +588,33 @@ def update_user_settings():
         folder = data.get('folder', 'Tümü')
         
         quota_reset_date = None
-        if data.get('quota') is not None:
-            quota_reset_date = datetime.now().strftime('%Y-%m-%d')
+        quota_start_date_new = None
         
+        # Mevcut ayarları çek
         c.execute("SELECT * FROM user_settings WHERE email = ?", (email,))
         existing = c.fetchone()
         
+        # Kota değiştiğinde
+        if data.get('quota') is not None:
+            # quota_start_date yoksa (ilk kez kota veriliyor)
+            if not existing or not existing[6]:  # quota_start_date kolonu
+                today = datetime.now().strftime('%Y-%m-%d')
+                quota_start_date_new = today
+                quota_reset_date = today
+                
+                # İlk ödeme tarihleri de ayarla
+                if not data.get('last_payment_date'):
+                    expiry_or_payment = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+        
         if existing:
-            if quota_reset_date:
+            if quota_start_date_new:
                 c.execute("""UPDATE user_settings 
                              SET monthly_price = ?, next_payment_date = ?, notes = ?, folder = ?, 
-                                 quota_reset_date = ?, updated_at = CURRENT_TIMESTAMP
+                                 quota_reset_date = ?, quota_start_date = ?, last_payment_date = ?,
+                                 updated_at = CURRENT_TIMESTAMP
                              WHERE email = ?""",
                           (data.get('monthly_price', 0), expiry_or_payment, data.get('notes', ''), 
-                           folder, quota_reset_date, email))
+                           folder, quota_reset_date, quota_start_date_new, quota_start_date_new, email))
             else:
                 c.execute("""UPDATE user_settings 
                              SET monthly_price = ?, next_payment_date = ?, notes = ?, folder = ?, 
@@ -599,11 +623,11 @@ def update_user_settings():
                           (data.get('monthly_price', 0), expiry_or_payment, data.get('notes', ''), 
                            folder, email))
         else:
-            if quota_reset_date:
-                c.execute("""INSERT INTO user_settings (email, monthly_price, next_payment_date, notes, folder, quota_reset_date)
-                             VALUES (?, ?, ?, ?, ?, ?)""",
+            if quota_start_date_new:
+                c.execute("""INSERT INTO user_settings (email, monthly_price, next_payment_date, notes, folder, quota_reset_date, quota_start_date, last_payment_date)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                           (email, data.get('monthly_price', 0), expiry_or_payment, data.get('notes', ''), 
-                           folder, quota_reset_date))
+                           folder, quota_reset_date, quota_start_date_new, quota_start_date_new))
             else:
                 c.execute("""INSERT INTO user_settings (email, monthly_price, next_payment_date, notes, folder)
                              VALUES (?, ?, ?, ?, ?)""",
@@ -613,6 +637,8 @@ def update_user_settings():
         conn.close()
         
         quota_changed = False
+        first_time_quota = False
+        
         if data.get('quota') is not None or data.get('expiry_date'):
             xui_conn = sqlite3.connect(XUI_DB)
             xui_c = xui_conn.cursor()
@@ -646,7 +672,10 @@ def update_user_settings():
                             inbound_changed = True
                             quota_changed = True
                             
-                            reset_user_quota(email)
+                            # İlk kez kota veriyorsa
+                            if quota_start_date_new:
+                                first_time_quota = True
+                                reset_user_quota(email)
                             
                             print(f"✅ Kota güncellendi: {email} -> {quota_gb} GB (hem JSON hem client_traffics)")
                         
@@ -766,59 +795,61 @@ def add_payment():
                      VALUES (?, ?, ?, ?, ?)""",
                   (email, amount, payment_date, payment_method, notes))
         
-        c.execute("SELECT next_payment_date FROM user_settings WHERE email = ?", (email,))
+        c.execute("SELECT quota_start_date FROM user_settings WHERE email = ?", (email,))
         existing_record = c.fetchone()
         
         next_payment = None
-        quota_reset_date = None
-
+        
         if existing_record and existing_record[0]:
+            # quota_start_date var, buna göre hesapla
             try:
-                current_next_payment = datetime.strptime(existing_record[0], '%Y-%m-%d')
-                payment_day = current_next_payment.day
+                quota_start = datetime.strptime(existing_record[0], '%Y-%m-%d')
+                start_day = quota_start.day
                 
-                next_month = current_next_payment.month + 1
-                next_year = current_next_payment.year
+                # Bugünden sonraki ilk quota_start gününü bul
+                today = datetime.now()
+                next_month = today.month + 1
+                next_year = today.year
                 
                 if next_month > 12:
                     next_month = 1
                     next_year += 1
                 
+                # Ayın son günü kontrolü
                 max_day = calendar.monthrange(next_year, next_month)[1]
-                safe_day = min(payment_day, max_day)
+                safe_day = min(start_day, max_day)
                 
                 next_payment = datetime(next_year, next_month, safe_day).strftime('%Y-%m-%d')
-                quota_reset_date = existing_record[0]
             except:
                 payment_dt = datetime.strptime(payment_date, '%Y-%m-%d')
                 next_payment = (payment_dt + timedelta(days=30)).strftime('%Y-%m-%d')
-                quota_reset_date = payment_date
         else:
+            # quota_start_date yok, +30 gün
             try:
                 payment_dt = datetime.strptime(payment_date, '%Y-%m-%d')
                 next_payment = (payment_dt + timedelta(days=30)).strftime('%Y-%m-%d')
-                quota_reset_date = payment_date
             except:
                 next_payment = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
-                quota_reset_date = datetime.now().strftime('%Y-%m-%d')
         
         c.execute("SELECT * FROM user_settings WHERE email = ?", (email,))
         if c.fetchone():
             c.execute("""UPDATE user_settings 
-                         SET last_payment_date = ?, next_payment_date = ?, quota_reset_date = ?, 
+                         SET last_payment_date = ?, next_payment_date = ?, 
                              updated_at = CURRENT_TIMESTAMP
                          WHERE email = ?""",
-                      (payment_date, next_payment, quota_reset_date, email))
+                      (payment_date, next_payment, email))
         else:
-            c.execute("""INSERT INTO user_settings (email, last_payment_date, next_payment_date, quota_reset_date)
-                         VALUES (?, ?, ?, ?)""",
-                      (email, payment_date, next_payment, quota_reset_date))
+            c.execute("""INSERT INTO user_settings (email, last_payment_date, next_payment_date)
+                         VALUES (?, ?, ?)""",
+                      (email, payment_date, next_payment))
         
         conn.commit()
         conn.close()
         
-        reset_user_quota(email)
+        # KOTA SIFIRLANMAZ! (KRITIK DEĞİŞİKLİK)
+        # reset_user_quota(email)  # ← Bu satır kaldırıldı!
         
+        # Süreyi uzat
         if next_payment:
             try:
                 expiry_dt = datetime.strptime(next_payment, '%Y-%m-%d')
@@ -846,9 +877,9 @@ def add_payment():
                         new_json = json.dumps(settings, ensure_ascii=False)
                         xui_c.execute("UPDATE inbounds SET settings = ? WHERE id = ?", (new_json, inbound_id))
                 
-                # CLIENT_TRAFFICS'I DE GUNCELLE (KRITIK!)
+                # CLIENT_TRAFFICS'I GUNCELLE (enable=1, ama kota sıfırlanmaz!)
                 xui_c.execute("""UPDATE client_traffics 
-                                 SET enable = 1, up = 0, down = 0, expiry_time = ?
+                                 SET enable = 1, expiry_time = ?
                                  WHERE email = ?""", 
                               (new_expiry_ms, email))
                 
@@ -861,7 +892,7 @@ def add_payment():
             except Exception as e:
                 print(f"Ödeme sonrası süre uzatma hatası: {e}")
         
-        return jsonify({'success': True, 'message': 'Ödeme kaydedildi, kota sıfırlandı, süre uzatıldı ve cache temizlendi!'})
+        return jsonify({'success': True, 'message': 'Ödeme kaydedildi ve süre uzatıldı! (Kota sıfırlanmadı)'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
