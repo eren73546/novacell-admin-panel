@@ -62,6 +62,24 @@
   #onlineUsersList>div,#upcomingPaymentsList>div{padding:12px 10px!important;font-size:12px!important}
   #onlineUsersList strong,#upcomingPaymentsList strong{font-size:14px!important}
   .spinner{width:50px;height:50px;border-width:4px}
+  
+  /* MOBİLDE KART TOGGLE DAHA BÜYÜK */
+  .user-card .toggle-switch{
+    width:50px;
+    height:28px;
+    min-width:50px;
+    min-height:44px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+  }
+  .user-card .slider:before{
+    height:20px;
+    width:20px;
+  }
+  .user-card input:checked+.slider:before{
+    transform:translateX(22px);
+  }
 }
 @media(max-width:360px){
   .header h1{font-size:16px}
@@ -712,7 +730,10 @@ function displayUserCards(u){
               <div class="user-folder-tag">${x.folder||'Tümü'}</div>
             </div>
           </div>
-          <span class="badge ${isActive?'badge-active':'badge-passive'}">${x.durum.toUpperCase()}</span>
+          <label class="toggle-switch">
+            <input type="checkbox" ${isActive?'checked':''} onchange="toggleUser('${x.email}',this.checked)">
+            <span class="slider"></span>
+          </label>
         </div>
         <div class="user-card-stats">
           <span>📦 <strong>${x.paket_tipi}</strong></span>
@@ -1064,16 +1085,16 @@ async function toggleUser(email,enable){
     });
     const d=await r.json();
     if(d.success){
-      alert(`✅ ${email} ${enable?'aktif':'pasif'}`);
+      await loadData();
+      loadNotifications();
     }else{
       alert('Hata: '+d.message);
-      const row=document.querySelector(`tr[data-email="${email}"]`);
-      if(row){
-        const toggleInput=row.querySelector('.toggle-switch input');
-        if(toggleInput)toggleInput.checked=!enable;
-      }
+      await loadData();
     }
-  }catch(e){alert('Hata!');}
+  }catch(e){
+    alert('Hata!');
+    await loadData();
+  }
   finally{overlay.classList.remove('active');}
 }
 
