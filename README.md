@@ -1,4 +1,4 @@
-# novacell-admin-panel// kota dolunca duruyor+Mobil uyum+FINALL 07.01.2026 01:07
+# novacell-admin-panel// kota dolunca duruyor+Mobil uyum+Klasör taşımada kota sıfırlanmıyor+FINALL 07.01.2026 05:31
 https://claude.ai/chat/1378cb5f-10be-4867-8b03-163aac658c3f
 mail sondakikagumdeum321@gmail.com Account
 bash <(curl -sL https://raw.githubusercontent.com/eren73546/novacell-admin-panel/main/install-v4.5.sh)
